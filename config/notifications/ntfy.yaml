@@ -1,0 +1,26 @@
+# ntfy.sh push notifications.
+#
+# Subscribe on your phone via the ntfy app to a topic of your choice
+# (any string — pick one that's hard to guess if you don't want others
+# reading your build status). Then run with:
+#
+#   uv run python run_pipeline.py notifications=ntfy notifications.topic=my-secret-topic
+#
+# For a self-hosted ntfy server, override `server`. For a private/auth'd
+# topic, set `auth_token` to a bearer token.
+
+enabled: true
+backend: ntfy
+
+server: ${oc.env:NTFY_URL,null}
+topic: marcin-ai        # required: set on the CLI or in your experiment file
+priority: high # one of: min, low, default, high, urgent
+tags: []   # optional list of ntfy emoji-style tags
+auth_token: ${oc.env:NTFY_TOKEN,null}   # optional bearer token for private topics; reads $NTFY_TOKEN, null if unset
+timeout: 10       # seconds
+
+# Which events trigger a notification.
+on_stage_start: false
+on_stage_end: true
+on_pipeline_end: true
+on_error: true

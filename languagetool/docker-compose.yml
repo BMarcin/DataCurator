@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v3.6.2
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entryPoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - web
+
+  languagetool:
+#    image: erikvl87/languagetool
+    build: .
+    environment:
+      - langtool_maxCheckThreads=8
+#      - langtool_pipelinePrewarming=true
+      - langtool_pipelineCaching=true
+      - langtool_cacheSize=1000
+      - Java_Xmx=7g
+      - langtool_fasttextBinary=/usr/bin/fasttext
+      - langtool_fasttextModel=/LanguageTool/lid.176.bin
+    restart: unless-stopped
+    deploy:
+      mode: replicated
+      replicas: 16              # Liczba instancji LanguageToola
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.languagetool.rule=Host(`languagetool.loc`)"
+      - "traefik.http.routers.languagetool.entrypoints=web"
+      - "traefik.http.services.languagetool.loadbalancer.server.port=8010"
+    networks:
+      - web
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8010/v2/languages" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - ./logback.xml:/LanguageTool/logback.xml
+
+networks:
+  web:
+    driver: bridge
