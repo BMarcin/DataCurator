@@ -3,6 +3,7 @@ name: Mirror wiki to GitHub Wiki tab
 on:
   push:
     branches: [main]
+    paths: [wiki/**]
   workflow_dispatch:
 
 concurrency:
@@ -17,37 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Mirror wiki/ to GitHub Wiki
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [ ! -d wiki ] || [ -z "$(ls -A wiki 2>/dev/null)" ]; then
-            echo "No wiki/ content to mirror."
-            exit 0
-          fi
-
-          tmp="$(mktemp -d)"
-          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git"
-
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          if ! git clone "$remote" "$tmp"; then
-            echo "::error::Could not clone ${GITHUB_REPOSITORY}.wiki.git — initialize the wiki by creating the first page through the GitHub UI, then re-run."
-            exit 1
-          fi
-
-          rsync -a --delete --exclude='.git' wiki/ "$tmp/"
-
-          cd "$tmp"
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No wiki changes."
-            exit 0
-          fi
-
-          git add -A
-          git commit -m "Mirror wiki from ${GITHUB_SHA::7}"
-          git push
+      - uses: Andrew-Chen-Wang/github-wiki-action@v4
+        with:
+          path: wiki/
