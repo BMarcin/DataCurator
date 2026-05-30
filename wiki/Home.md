@@ -7,11 +7,17 @@ machine-translation (Google Translate), and structured-output LLM calls
 against any OpenAI-compatible endpoint, with run-time wiring handled by
 Hydra. Intermediate stage outputs are persisted as JSONL so any stage
 can be re-run in isolation. This wiki documents the components that
-currently exist in the repository — the orchestration layer that ties
-them into a single end-to-end pipeline is still being ported in.
+currently exist in the repository — the stage/modifier framework and a
+Hydra-driven runner that flows a dataset through an ordered list of
+stages are in place; the LLM and translation stages that will plug into
+them are still being ported in.
 
 ## What lives in the repo today
 
+- A generic stage/modifier framework with a shared variable context
+  (see [Components](Components#stages-and-modifiers)).
+- A Hydra-driven pipeline runner with per-stage JSONL persistence and
+  resume (see [Components](Components#pipeline-runner)).
 - A Google Translate async client used as a pre-pass translator
   (see [Components](Components#googletranslator)).
 - A ntfy.sh notifier driven by Hydra config
@@ -22,8 +28,8 @@ them into a single end-to-end pipeline is still being ported in.
   (see [Components](Components#improve-translations-prompt)).
 - A LanguageTool service packaged with Docker Compose and Traefik
   (see [Components](Components#languagetool-service)).
-- Hydra configs for the LLM and the notifier
-  (see [Configuration](Configuration)).
+- Hydra configs for the runner, experiments, stages, the LLM and the
+  notifier (see [Configuration](Configuration)).
 
 ## Where to start
 

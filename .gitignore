@@ -1,2 +1,5 @@
 .env
 .idea
+dataset/
+outputs/
+__pycache__/

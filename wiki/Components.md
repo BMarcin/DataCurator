@@ -1,11 +1,83 @@
 # Components
 
 This page documents the modules that currently live in the repo and
-how they fit together. The pipeline orchestration that strings them
-into stages is not yet in this tree — what is here are the building
-blocks. Each section maps directly to a file or directory and only
-describes behavior that is visible in the source. For the config keys
-each component reads, see [Configuration](Configuration).
+how they fit together. The stage/modifier framework that the other
+components plug into now exists; the concrete stage implementations
+(LLM, regex, translation) and the runner that orders them are still
+being ported in. Each section maps directly to a file or directory and
+only describes behavior that is visible in the source. For the config
+keys each component reads, see [Configuration](Configuration).
+
+## Stages and modifiers
+
+`DataCurator.pipeline` defines the generic building blocks for a stage.
+A `Stage` is one self-contained processing step — running an LLM prompt,
+applying regex fixes, calling a translation API. Subclasses implement
+`process`, which reads inputs from and writes outputs back into a shared
+`StageContext`; callers invoke `run`, which fires every `before` modifier,
+calls `process`, then fires every `after` modifier and returns the
+context. The API is async so IO-bound stages (LLM, translation) can await
+their work; purely synchronous stages simply do not await.
+
+A `StageModifier` mutates the variables a stage operates on without the
+stage knowing about it — the motivating case is normalising a field
+before the LLM sees it. Each modifier declares its `phases` (`BEFORE` to
+adjust inputs, `AFTER` to adjust outputs) and implements `modify`.
+`FieldModifier` is a ready-made subclass for the common "rewrite one
+field" case: implement `transform`, and it reads `source`, transforms the
+value, and writes it back to `source` or a separate `target`. This is the
+pre-stage enhancer hook described in the pipeline design notes — an
+attached filter that replaces a data field's value or adds new ones.
+
+`StageContext` is the mutable mapping passed through both sides. Beyond
+the usual mapping operations it exposes intent-revealing mutators:
+`add` (new variable, errors if it exists), `replace` (overwrite existing,
+errors if absent), and `set` (add-or-overwrite).
+
+## Pipeline runner
+
+`DataCurator.pipeline.runner` turns a Hydra config into an ordered run of
+stages over a JSONL dataset. `build_pipeline(cfg)` reads the `order` list
+and the `pipeline` mapping, instantiating each stage's `stage` block via
+`hydra.utils.instantiate` (modifiers nested under it are built too);
+`PipelineRunner.run` then feeds the dataset through them. Stage `N` reads
+the output of stage `N-1` — or the dataset input for the first stage —
+and writes its own output to `<output_dir>/<NN>_<stage>.jsonl`. Records
+are processed concurrently up to `runner.concurrency` and each result is
+flushed to disk as soon as it is produced, so an interrupted run never
+loses completed work.
+
+The runner implements the pipeline-design rules directly. Resume is
+driven by a sidecar `<NN>_<stage>.meta.json` holding a signature hashed
+from the stage's resolved config: when the signature is unchanged and
+`runner.resume` is set, records already present in the output (matched by
+`runner.id_field`) are skipped; when the config or logic changes the
+signature differs and the stage is recomputed from scratch. Stages with
+`enabled: false` are passed through, and `runner.start_from` resumes at a
+named stage by reading the previous stage's output. When two consecutive
+stages declare different `model` names the runner logs a warning, sends an
+urgent notification, and — unless `runner.pause_on_model_switch` is false
+or no TTY is attached — blocks for operator confirmation so the deployed
+GPU model can be swapped. Notifications fire through
+[`notify`](#notifications) at the points enabled in the notifications
+config.
+
+The Hydra entrypoint is `run_pipeline.py` at the repo root:
+
+```bash
+uv run python run_pipeline.py
+```
+
+## Regex-fix stage
+
+`DataCurator.pipeline.stages.regex_fix` is the in-tree example stage. Both
+`RegexFixStage` and `RegexFixModifier` apply an ordered list of
+`{pattern, replace}` rules to a text field; the stage rewrites the field
+in place, while the modifier (a `FieldModifier`) can write the result to a
+separate `target` field and attach to any other stage as a pre-pass. Rules
+are plain mappings so they can be declared directly in YAML, which makes
+this a self-contained, deterministic illustration of how a stage and its
+modifiers are wired up through config.
 
 ## GoogleTranslator
 

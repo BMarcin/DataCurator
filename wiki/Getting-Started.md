@@ -2,10 +2,10 @@
 
 DataCurator targets Python 3.13 and is managed with `uv`. All commands
 are expected to run through `uv run` so the project venv is used. The
-repo currently exposes individual components (a Google Translate
-client, a ntfy notifier, a JSONL browser, a prompt template, and a
-LanguageTool Docker service) rather than a single CLI — the sections
-below cover the pieces that are runnable today. See
+repo exposes a Hydra-driven pipeline runner (`run_pipeline.py`) plus
+individual components (a Google Translate client, a ntfy notifier, a
+JSONL browser, a prompt template, and a LanguageTool Docker service) —
+the sections below cover the pieces that are runnable today. See
 [Components](Components) for a deeper description of each one and
 [Configuration](Configuration) for the keys they accept.
 
@@ -32,6 +32,30 @@ NTFY_TOKEN=tk_xxxxxxxxxxxxxxxxxxxx
 
 Both are optional — `oc.env` falls back to `null` when the variable is
 unset. See [Configuration](Configuration) for the full list.
+
+## Run the pipeline
+
+`run_pipeline.py` is the Hydra entrypoint. The bundled `example`
+experiment runs two regex-fix stages over `data/example_input.jsonl` and
+writes one JSONL file per stage under `dataset/example/`:
+
+```bash
+uv run python run_pipeline.py
+```
+
+The flow is config-driven, so you can change it from the command line.
+Resume from a stage, disable a stage, or enable notifications:
+
+```bash
+uv run python run_pipeline.py runner.start_from=punctuation
+uv run python run_pipeline.py pipeline.whitespace.enabled=false
+uv run python run_pipeline.py notifications=ntfy notifications.topic=my-topic
+```
+
+Reruns skip records already present in a stage's output unless that
+stage's config changed. See [Configuration](Configuration) for the full
+key set and [Components](Components#pipeline-runner) for how the runner
+behaves.
 
 ## Browse a JSONL file
 
