@@ -18,14 +18,24 @@ them are still being ported in.
   (see [Components](Components#stages-and-modifiers)).
 - A Hydra-driven pipeline runner with per-stage JSONL persistence and
   resume (see [Components](Components#pipeline-runner)).
+- A generic LLM stage for OpenAI-compatible/vLLM endpoints with
+  structured output (see [Components](Components#llm-stage)).
+- Stage modifiers: Google Translate and LanguageTool field pre-passes
+  plus field-rename, constant-injection and candidate-list helpers
+  (see [Components](Components#stage-modifiers)).
 - A Google Translate async client used as a pre-pass translator
   (see [Components](Components#googletranslator)).
 - A ntfy.sh notifier driven by Hydra config
   (see [Components](Components#notifications)).
+- A best-effort job reporter that publishes live status, metrics and
+  artifacts to an S3 dashboard backend
+  (see [Components](Components#job-reporting)).
 - A Textual TUI for browsing JSONL files
   (see [Components](Components#jsonl-browser)).
-- A Jinja2 prompt template for the LLM review step
-  (see [Components](Components#improve-translations-prompt)).
+- Jinja2 prompt templates for the LLM review step and the final
+  candidate-selection step (see
+  [Components](Components#improve-translations-prompt) and
+  [Components](Components#pick-translations-prompt)).
 - A LanguageTool service packaged with Docker Compose and Traefik
   (see [Components](Components#languagetool-service)).
 - Hydra configs for the runner, experiments, stages, the LLM and the

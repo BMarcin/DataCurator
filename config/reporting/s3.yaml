@@ -1,0 +1,37 @@
+# Job-progress reporting to an S3-compatible bucket (e.g. self-hosted Garage).
+#
+# Publishes a generic status document, system metrics and stage artifacts to
+#   s3://<bucket>/<prefix>/<job_id>/
+# so an external dashboard can show live progress without ever connecting to
+# this machine — the producer only ever PUTs to S3. Best-effort: a failed
+# upload logs a warning and never aborts the run. Enable with:
+#
+#   uv run python run_pipeline.py reporting=s3
+#
+# Secrets are read from .env via the `oc.env` resolver — never commit them.
+
+enabled: true
+backend: s3
+
+# Connection (secrets live in .env; missing values resolve to null).
+endpoint_url: ${oc.env:JOB_S3_ENDPOINT,null}           # S3 endpoint URL (Garage)
+region: ${oc.env:JOB_S3_REGION,garage}
+bucket: ${oc.env:JOB_S3_BUCKET,null}                   # required when enabled
+access_key_id: ${oc.env:JOB_S3_ACCESS_KEY_ID,null}
+secret_access_key: ${oc.env:JOB_S3_SECRET_ACCESS_KEY,null}
+prefix: jobs                                            # all jobs live under <bucket>/<prefix>/
+
+# Job identity (id, type, deep-links) is owned by the experiment, not this
+# backend config — see the `job:` block in config/experiment/*.yaml. The
+# job_id is always the experiment name, so reruns share one dashboard entry.
+
+# Cadence and behaviour.
+heartbeat_interval_s: 10      # push status (and refresh liveness) at least this often
+sample_system_metrics: true  # include CPU / RAM / GPU in each status push
+upload_artifacts: true       # upload each output shard as a downloadable artifact the moment it closes
+metrics_flush_s: 15          # minimum interval between metrics.jsonl re-uploads
+
+# Shards are a core feature of the runner (see `runner.shard_size`): every stage
+# always writes rotating step shards locally. This backend only adds the upload —
+# each closed shard is PUT under jobs/<job_id>/artifacts/<NN>_<stage>/ and the
+# status `artifacts_rev` is bumped so the dashboard refreshes its artifact list.

@@ -17,7 +17,7 @@
 - As soon as a pipeline stage result is ready, it should be saved, so if the pipeline fails the results are not lost.
 - If there were no pipeline changes in code/logic and the pipeline is rerun, it should skip processing of the already processed entities
 - Pipelines needs to support ntfy.sh notifications.
-- If between stages different LLM models are used, the runner pauses and asks for confirmation, so the operator can swap the model deployed on the GPU. This behavior can be configured.
+- Before running next stage the script must ask the user if wants to proceed or automatically start next stage. This behavior can be configured.
 - Each stage should be independent - I need to be able to re-run from any point by setting specific config/flag to a prior output.
 - Each stage can be enabled or disabled during the run. The operator can decide which stages to run.
 - Each stage can do its part of logic and at the same time it should support pre-stage execution. To each stage I should be able to configure one of the existing filters/enchancers which are replacing values of the data fields used during the stage or are adding new ones.

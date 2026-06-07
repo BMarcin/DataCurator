@@ -1,0 +1,20 @@
+# Reusable generic LLM stage. Compose it into an experiment under a
+# package key, e.g. `- /stages/llm@pipeline.review`. Each stage instance
+# picks its own model, so load the model presets in the experiment under
+# `_models.*` and point `stage.model` at one (e.g. `${_models.qwen35}`).
+# Override `stage.prompt` (templated conversation), `stage.response_model`
+# (structured-output schema) and `stage.output_field` per instance.
+enabled: true               # set false (here or in the experiment) to skip this stage
+
+stage:
+  _target_: DataCurator.pipeline.stages.llm.LLMStage
+  model: ???                # required: point at a preset, e.g. ${_models.qwen35}
+  response_model: DataCurator.pipeline.schemas.TranslationReview
+  output_field: review
+  # Prompts live in ./prompts as Jinja2 files. Set `prompt` to a list of
+  # {role, template} entries naming those files, or leave it null and feed
+  # a pre-built conversation via `input_field`.
+  prompts_dir: prompts
+  input_field: messages
+  prompt: null
+  modifiers: []

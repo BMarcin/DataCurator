@@ -10,8 +10,21 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 import language_tool_python
+import requests
 from loguru import logger
 from tenacity import Retrying, RetryError, stop_after_attempt
+
+
+def _is_connection_error(exc: BaseException | None) -> bool:
+    """True if ``exc`` (or a cause/context in its chain) is a failure to reach
+    the LanguageTool server, as opposed to an error processing a given text."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, (requests.exceptions.ConnectionError, ConnectionError)):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
 
 
 DEFAULT_ALLOWED_FIXES: Tuple[str, ...] = (
@@ -170,10 +183,17 @@ class LanguageToolChecker:
         self.retries = retries
         self.max_passes = max_passes
 
-        if remote_server:
-            self.tool = language_tool_python.LanguageTool(language, remote_server=remote_server)
-        else:
-            self.tool = language_tool_python.LanguageTool(language)
+        try:
+            if remote_server:
+                self.tool = language_tool_python.LanguageTool(language, remote_server=remote_server)
+            else:
+                self.tool = language_tool_python.LanguageTool(language)
+        except Exception as exc:
+            if _is_connection_error(exc):
+                raise ConnectionError(
+                    f"cannot reach LanguageTool server at {remote_server!r}; is it running?"
+                ) from exc
+            raise
 
     def fix_and_get_fixes(self, text: str) -> Tuple[str, str]:
         """Run one LanguageTool pass; return ``(fixed_text, remaining_issues_str)``."""
@@ -194,6 +214,11 @@ class LanguageToolChecker:
                     return fixed, final_fixes
         except RetryError as e:
             last_exc = e.last_attempt.exception() if e.last_attempt else e
+            if _is_connection_error(last_exc):
+                raise ConnectionError(
+                    f"cannot reach LanguageTool server at {self.remote_server!r}; "
+                    f"is it running?"
+                ) from last_exc
             exc_type = type(last_exc).__name__
             preview = text[:200].replace("\n", " ")
             logger.opt(exception=last_exc).error(
@@ -238,6 +263,11 @@ class LanguageToolChecker:
                     return fixed, issues
         except RetryError as e:
             last_exc = e.last_attempt.exception() if e.last_attempt else e
+            if _is_connection_error(last_exc):
+                raise ConnectionError(
+                    f"cannot reach LanguageTool server at {self.remote_server!r}; "
+                    f"is it running?"
+                ) from last_exc
             exc_type = type(last_exc).__name__
             preview = text[:200].replace("\n", " ")
             logger.opt(exception=last_exc).error(

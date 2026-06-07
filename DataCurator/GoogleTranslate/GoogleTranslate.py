@@ -5,9 +5,11 @@ translation logic can run as a stage step before the LLM call.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 import httpx
+
 from loguru import logger
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
 
@@ -30,6 +32,21 @@ class GoogleTranslator:
         self.retries = retries
         self.timeout = timeout
         self.concurrency = concurrency
+        # Built lazily inside the running loop on first use; see _get_semaphore.
+        self._semaphore: Optional[asyncio.Semaphore] = None
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Lazily build the concurrency gate bound to the running event loop.
+
+        Created on first use rather than in ``__init__`` (which may run
+        outside any loop, e.g. while Hydra builds the pipeline), and with no
+        ``await`` between the ``None`` check and the assignment so concurrent
+        callers can't race to create two competing gates.
+        """
+        semaphore = self._semaphore
+        if semaphore is None:
+            semaphore = self._semaphore = asyncio.Semaphore(self.concurrency)
+        return semaphore
 
     def _client(self) -> httpx.AsyncClient:
         """Build an :class:`httpx.AsyncClient` honouring the configured timeout and concurrency."""
@@ -80,13 +97,17 @@ class GoogleTranslator:
             return await self.translate(client, text)
 
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self.retries),
-                wait=wait_exponential(multiplier=1, min=2, max=30),
-                reraise=True,
-            ):
-                with attempt:
-                    return await _call()
+            # Hold one concurrency slot for the whole retry sequence, so a
+            # backing-off request doesn't free its slot to a new caller and
+            # let total in-flight requests drift past ``concurrency``.
+            async with self._get_semaphore():
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(self.retries),
+                    wait=wait_exponential(multiplier=1, min=2, max=30),
+                    reraise=True,
+                ):
+                    with attempt:
+                        return await _call()
         except Exception as e:
             logger.opt(exception=e).error(
                 f"Google Translate request failed after {self.retries} retries "

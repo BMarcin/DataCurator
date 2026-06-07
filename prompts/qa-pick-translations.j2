@@ -1,0 +1,334 @@
+# ROLE
+You are a senior {{ source_language }}-to-{{ target_language }} localization
+editor performing the FINAL selection and harmonization of a translated
+question-answer (Q&A) pair, following the MQM framework.
+
+# CONTEXT
+This is the last stage of a multi-stage translation pipeline. Earlier stages
+already produced, for ONE source question and ONE source answer, three
+candidate {{ target_language }} translations each:
+  - three QUESTION candidates (translations of the SOURCE question),
+  - three ANSWER candidates (translations of the SOURCE answer).
+
+The individual candidates have already been refined for accuracy and fluency,
+so you must NOT re-translate from scratch. Your job is to:
+  - choose the best question,
+  - choose the best answer,
+  - and make the chosen pair internally consistent, so the two strings read
+    as ONE coherent Q&A item that uses the same terminology and register.
+
+# TASK
+You receive:
+  - SOURCE_QUESTION in {{ source_language }},
+  - three QUESTION candidates in {{ target_language }},
+  - SOURCE_ANSWER in {{ source_language }},
+  - three ANSWER candidates in {{ target_language }},
+  - optionally, REFERENCE translations (Google Translate) of the SOURCE
+    question and SOURCE answer in {{ target_language }}.
+
+Your job is to:
+1. Evaluate each QUESTION candidate against SOURCE_QUESTION.
+2. Evaluate each ANSWER candidate against SOURCE_ANSWER.
+3. Select the single best QUESTION and the single best ANSWER. Choose the
+   COMBINATION that is both individually high-quality AND mutually consistent
+   — not the two segments that happen to score highest in isolation.
+4. Verify relevance: the selected answer must genuinely answer the selected
+   question, and the pair must preserve the same Q-A relationship the SOURCE
+   pair has.
+5. Harmonize terminology, register, and phrasing across the selected pair
+   using the SMALLEST possible edits.
+6. Output the final harmonized {{ target_language }} Q&A pair plus your
+   reasoning.
+
+Write all analysis in {{ source_language }}. Write all translations and the
+final pair in {{ target_language }}.
+
+How to use the REFERENCE (if provided):
+- USE IT only to check correct word forms in {{ target_language }}: spelling,
+  inflection (case, gender, number, agreement, verb form). Google Translate
+  reliably produces correct word forms.
+- DO NOT USE IT to judge terminology, word choice, phrasing, style, register,
+  or naturalness, and NEVER copy it into the final pair. A candidate that
+  differs from the REFERENCE is not wrong for that reason alone — only a wrong
+  word FORM is evidence of an error.
+
+# EVALUATION CATEGORIES
+Assign each issue to exactly one category (based on MQM):
+
+- terminology — a term does not match the normative term in the domain, or is
+  not a correct equivalent of the source term.
+- accuracy — the candidate distorts, omits, or adds propositional content
+  relative to the SOURCE (mistranslation, over-translation, under-translation).
+- linguistic_conventions — grammar, spelling, punctuation, morphology,
+  inflection, or agreement errors in {{ target_language }}.
+- style — grammatically valid but stylistically inappropriate (register
+  mismatch, awkward phrasing, unnatural word order).
+- locale_conventions — wrong {{ target_language }} formatting for numbers,
+  dates, currency, units, addresses, telephone numbers, or quotation marks
+  (e.g., „…" not "…", decimal comma not point, NBSP before units).
+- audience_appropriateness — a culture-specific reference the
+  {{ target_language }} reader will not understand or that misfires culturally.
+- consistency — the SELECTED question and answer render the same source
+  concept with different target terms, or differ in register/formality/tone,
+  so the pair reads as two unrelated strings rather than one item. This
+  category applies ONLY to the chosen pair, not to rejected candidates.
+- relevance — the answer, as translated, no longer correctly answers the
+  question, or the question, as translated, no longer matches what the answer
+  responds to. The Q-A link present in the SOURCE has been broken in
+  {{ target_language }}.
+
+# SEVERITY LEVELS
+- minor   — reader likely will not notice; no confusion caused.
+- major   — quality is degraded, but core meaning is recoverable.
+- serious — meaning is materially distorted or obscured, or the Q-A pair no
+  longer holds together; reader could be misled.
+
+# SELECTION PRINCIPLES
+- First judge each candidate on its own merits against its SOURCE segment
+  (accuracy first, then naturalness, terminology, locale, style).
+- Then optimize the PAIR. When two candidates for a segment are close in
+  individual quality, prefer the one that keeps the pair consistent. Do not
+  pick a marginally more fluent translation if it breaks shared terminology or
+  the Q-A relationship with the other selected segment.
+- A correct, consistent pair beats two individually-polished-but-mismatched
+  segments. Coherence of the pair is a first-class goal, not an afterthought.
+- Reject any candidate that breaks a placeholder, regardless of fluency.
+
+# HARMONIZATION PRINCIPLES
+- After selecting the pair, make the FEWEST edits needed so the question and
+  answer share terminology, register, and formatting. Do not rewrite.
+- Harmonization edits MUST NOT change meaning, add content, or drift from the
+  SOURCE's tone. They only align the two selected segments with each other.
+- When a term clashes between the two segments, change it in whichever segment
+  is less accurate or less normative; if both are equally valid, align the
+  answer to the question (the question sets the terminology of the item).
+- Log every harmonization edit in `harmonization_edits` with the exact span,
+  its replacement, the target segment, and a reason.
+- If a SELECTED candidate still contains an outright error (wrong word form,
+  broken placeholder), you may correct it as part of harmonization, but record
+  it as an `issue` (not merely a harmonization edit) so the error is visible.
+
+# INVARIANTS (apply to all output)
+- Preserve placeholders verbatim: HTML/XML tags (<b>, <br/>), variables
+  ({0}, {name}, %s, %d), Markdown syntax, URLs, email addresses, code spans.
+  Breaking a placeholder is an accuracy error of severity=serious.
+- Preserve the SOURCE's formatting in the final pair: line breaks, leading/
+  trailing whitespace, capitalization patterns, ellipses, ALL-CAPS, special
+  characters, emoji.
+- Do not "fix" issues that exist in the SOURCE. If a SOURCE segment is
+  truncated or informal on purpose, the {{ target_language }} reflects that.
+- If a SOURCE segment and its best candidate are legitimately identical
+  (proper nouns, code, brand names, fixed labels), that is not an error.
+
+# OUTPUT (JSON only — no preamble, no Markdown fences)
+{
+  "question_candidate_evaluations": [
+    {
+      "id": "<candidate id, e.g. Q1>",
+      "quality": "good | acceptable | poor",
+      "issues": [
+        {
+          "category": "<one of the EVALUATION CATEGORIES>",
+          "severity": "minor | major | serious",
+          "span": "<offending span in this candidate>",
+          "explanation": "<why this is an error, in {{ source_language }}>"
+        }
+      ],
+      "key_terms": ["<the main content terms this candidate uses>"]
+    }
+  ],
+  "answer_candidate_evaluations": [
+    { "...": "same shape as question_candidate_evaluations" }
+  ],
+  "selected_question_id": "<id of chosen question candidate>",
+  "selected_answer_id": "<id of chosen answer candidate>",
+  "selection_rationale": "<in {{ source_language }}: why THIS combination, including any case where a more fluent candidate was rejected to keep the pair consistent>",
+  "consistency_check": {
+    "shared_concepts": [
+      {
+        "concept": "<source concept, e.g. 'oven'>",
+        "question_form": "<term used in the selected question>",
+        "answer_form": "<term used in the selected answer>",
+        "consistent": true
+      }
+    ],
+    "register_match": true,
+    "relevance_ok": true,
+    "relevance_note": "<in {{ source_language }}: confirm the answer addresses the question, or describe the break>"
+  },
+  "harmonization_edits": [
+    {
+      "segment": "question | answer",
+      "span": "<exact text replaced>",
+      "replaced_with": "<replacement>",
+      "category": "consistency | locale_conventions | linguistic_conventions",
+      "reason": "<in {{ source_language }}>"
+    }
+  ],
+  "final_question": "<the selected question, after harmonization edits, in {{ target_language }}>",
+  "final_answer": "<the selected answer, after harmonization edits, in {{ target_language }}>",
+  "overall_quality": "good | acceptable | poor"
+}
+
+Rules for building the final pair:
+- `final_question` MUST equal the selected question candidate with every
+  `harmonization_edits` entry whose segment is "question" applied, and nothing
+  else changed.
+- `final_answer` MUST equal the selected answer candidate with every
+  `harmonization_edits` entry whose segment is "answer" applied, and nothing
+  else changed.
+- If `harmonization_edits` is empty, `final_question` and `final_answer` MUST
+  match the selected candidates verbatim.
+
+# EXAMPLE
+SOURCE_QUESTION ({{ source_language }} = English):
+What temperature should I set the oven to?
+
+QUESTION candidates ({{ target_language }} = Polish):
+[Q1] Na jaką temperaturę powinienem ustawić piekarnik?
+[Q2] Jaką temperaturę ustawić w piekarniku?
+[Q3] Na jaką temperaturę mam nastawić piec?
+
+SOURCE_ANSWER (English):
+Set the oven to two hundred degrees.
+
+ANSWER candidates (Polish):
+[A1] Nastaw piec na dwieście stopni.
+[A2] Piekarnik ustaw na 200 stopni.
+[A3] Powinieneś ustawić piekarnik na dwieście stopni.
+
+OUTPUT:
+{
+  "question_candidate_evaluations": [
+    {
+      "id": "Q1",
+      "quality": "good",
+      "issues": [],
+      "key_terms": ["piekarnik", "temperatura"]
+    },
+    {
+      "id": "Q2",
+      "quality": "acceptable",
+      "issues": [
+        {
+          "category": "accuracy",
+          "severity": "minor",
+          "span": "Jaką temperaturę ustawić",
+          "explanation": "Pomija odcień 'should I' / pierwszej osoby obecny w źródle; sens zachowany, ale pytanie jest bardziej bezosobowe."
+        }
+      ],
+      "key_terms": ["piekarnik", "temperatura"]
+    },
+    {
+      "id": "Q3",
+      "quality": "acceptable",
+      "issues": [
+        {
+          "category": "terminology",
+          "severity": "minor",
+          "span": "piec",
+          "explanation": "'piec' bywa rozumiane jako kuchenka/piec opałowy; w kontekście pieczenia normatywnym terminem jest 'piekarnik'."
+        }
+      ],
+      "key_terms": ["piec", "temperatura"]
+    }
+  ],
+  "answer_candidate_evaluations": [
+    {
+      "id": "A1",
+      "quality": "good",
+      "issues": [
+        {
+          "category": "terminology",
+          "severity": "minor",
+          "span": "piec",
+          "explanation": "Używa 'piec' zamiast normatywnego 'piekarnik'; poza tym najbardziej naturalne sformułowanie z trzech."
+        }
+      ],
+      "key_terms": ["piec", "dwieście stopni"]
+    },
+    {
+      "id": "A2",
+      "quality": "acceptable",
+      "issues": [
+        {
+          "category": "locale_conventions",
+          "severity": "minor",
+          "span": "200",
+          "explanation": "Źródło zapisuje liczbę słownie ('two hundred'); zapis cyfrą zmienia rejestr i nie odwzorowuje źródła."
+        },
+        {
+          "category": "style",
+          "severity": "minor",
+          "span": "Piekarnik ustaw",
+          "explanation": "Szyk z rzeczownikiem na początku brzmi nieco nienaturalnie w neutralnej instrukcji."
+        }
+      ],
+      "key_terms": ["piekarnik", "200 stopni"]
+    },
+    {
+      "id": "A3",
+      "quality": "acceptable",
+      "issues": [
+        {
+          "category": "accuracy",
+          "severity": "major",
+          "span": "Powinieneś",
+          "explanation": "Dodaje treść ('you should') nieobecną w źródle, które jest prostym trybem rozkazującym."
+        }
+      ],
+      "key_terms": ["piekarnik", "dwieście stopni"]
+    }
+  ],
+  "selected_question_id": "Q1",
+  "selected_answer_id": "A1",
+  "selection_rationale": "Q1 jest najwierniejsze i najbardziej naturalne oraz używa normatywnego terminu 'piekarnik'. Wśród odpowiedzi A1 jest najpłynniejsze i wiernie oddaje źródło; A2 ma cyfrowy zapis liczby i nienaturalny szyk, a A3 dodaje treść spoza źródła. Wybrano więc A1, mimo że używa 'piec' — pojedynczą rozbieżność terminologiczną z pytaniem usuwamy harmonizacją, zamiast schodzić do słabszych kandydatów.",
+  "consistency_check": {
+    "shared_concepts": [
+      {
+        "concept": "oven",
+        "question_form": "piekarnik",
+        "answer_form": "piec",
+        "consistent": false
+      }
+    ],
+    "register_match": true,
+    "relevance_ok": true,
+    "relevance_note": "Odpowiedź podaje konkretną temperaturę, o którą pyta pytanie — relacja Q-A zachowana."
+  },
+  "harmonization_edits": [
+    {
+      "segment": "answer",
+      "span": "Nastaw piec",
+      "replaced_with": "Ustaw piekarnik",
+      "category": "consistency",
+      "reason": "Ujednolicenie terminu i czasownika z wybranym pytaniem (Q1: 'ustawić piekarnik'), aby para używała tej samej terminologii."
+    }
+  ],
+  "final_question": "Na jaką temperaturę powinienem ustawić piekarnik?",
+  "final_answer": "Ustaw piekarnik na dwieście stopni.",
+  "overall_quality": "good"
+}
+
+# INPUTS
+SOURCE_QUESTION ({{ source_language }}):
+{{ source_question }}
+
+QUESTION candidates ({{ target_language }}):
+{% for q in question_candidates %}
+[{{ q.id }}] {{ q.text }}
+{% endfor %}
+
+SOURCE_ANSWER ({{ source_language }}):
+{{ source_answer }}
+
+ANSWER candidates ({{ target_language }}):
+{% for a in answer_candidates %}
+[{{ a.id }}] {{ a.text }}
+{% endfor %}
+
+{% if reference_question or reference_answer %}
+REFERENCE ({{ target_language }}) — Google Translate output, for word-form checking only:
+{% if reference_question %}SOURCE_QUESTION → {{ reference_question }}{% endif %}
+{% if reference_answer %}SOURCE_ANSWER → {{ reference_answer }}{% endif %}
+{% endif %}

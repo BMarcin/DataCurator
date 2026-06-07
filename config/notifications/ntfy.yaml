@@ -14,7 +14,7 @@ backend: ntfy
 
 server: ${oc.env:NTFY_URL,null}
 topic: marcin-ai        # required: set on the CLI or in your experiment file
-priority: high # one of: min, low, default, high, urgent
+priority: default # one of: min, low, default, high, urgent
 tags: []   # optional list of ntfy emoji-style tags
 auth_token: ${oc.env:NTFY_TOKEN,null}   # optional bearer token for private topics; reads $NTFY_TOKEN, null if unset
 timeout: 10       # seconds

@@ -93,7 +93,7 @@ Use these categories (based on MQM). Assign each issue to exactly one:
   Do not override these signals based on your own intuition unless you
   can cite a concrete reason.
 
-{% if target_language_tool_fixes %}
+{% if language_tool_fixes %}
 # LANGUAGETOOL FINDINGS
 An automated proofreader (LanguageTool) has analyzed the TARGET and
 produced the findings listed below. Treat these as candidate issues, not
@@ -141,7 +141,7 @@ text (≤40 chars on each side); the `error_text` field is just the flagged
 span.
 
 LanguageTool findings:
-{% for issue in target_language_tool_fixes %}
+{% for issue in language_tool_fixes %}
 - {{ issue.message }}
   error_text: {{ issue.error_text | default("") }}
   context: {{ issue.context | default("") }}
@@ -220,10 +220,10 @@ OUTPUT:
 
 # INPUTS
 SOURCE ({{ source_language }}):
-{{ source_segment }}
+{{ source_text }}
 
 TARGET ({{ target_language }}) — this is the translation you are reviewing:
-{{ target_segment }}
+{{ target_text }}
 
 REFERENCE ({{ target_language }}) — Google Translate output, for your reference only:
 {{ google_translation }}

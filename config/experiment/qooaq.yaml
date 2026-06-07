@@ -1,0 +1,190 @@
+# @package _global_
+#
+# An experiment declares the *flow*: which stages run, in what order, over
+# which dataset, and with which model. Each stage is toggled with `enabled`
+# and picks its own model from the `_models` presets loaded below, so
+# different stages can run on different LLMs. When stages use different
+# models, set `runner.pause_between_stages: true` so the runner waits for
+# you to swap the deployed model on the GPU between stages.
+#
+# Here a single LLM review stage runs against an OpenAI-compatible (vLLM)
+# endpoint. Two modifiers run in the `before` phase to enrich each record
+# before the prompt is built:
+#   * Google Translate adds a reference translation (`google_translation`);
+#   * LanguageTool normalises `target_text` and stashes leftover issues.
+# The templated prompt then renders from those (possibly modified) fields.
+#
+# CLI examples:
+#   # disable a stage on the fly
+#   uv run python run_pipeline.py pipeline.review.enabled=false
+#   # enable the second pass (runs on a different model)
+#   uv run python run_pipeline.py pipeline.review_polish.enabled=true
+#   # point a stage at a different preset
+#   uv run python run_pipeline.py 'pipeline.review.stage.model=${_models.bielik}'
+defaults:
+  # Named model presets, referenced per stage as ${_models.<name>}. Add more
+  # files under config/model/ and load them here to give stages more choices.
+  - /model/qwen35@_models.qwen35
+  - /stages/llm@pipeline.fix_answer
+  - /stages/llm@pipeline.fix_question
+  - /stages/llm@pipeline.pick_the_best_translations
+#  - /stages/llm@pipeline.review_polish
+  - _self_
+
+experiment_name: qooaq-fix
+
+# Job identity for the live dashboard (used only when reporting is enabled).
+# The job_id is always `experiment_name`, so reruns share one dashboard entry;
+# set the type and any deep-links to surface alongside this experiment here.
+job:
+  type: data-pipeline
+  links: []   # e.g. [{label: TensorBoard, url: https://...}]
+
+dataset:
+  input: data/qooaq.jsonl
+  output_dir: dataset/${experiment_name}
+  limit: 30   # process only the first N input rows (null = all); handy for smoke runs
+
+order:
+  - fix_answer
+  - fix_question
+  - pick_the_best_translations
+#  - review_polish
+
+pipeline:
+  # First pass: review and improve each translation with Qwen.
+  fix_answer:
+    enabled: true
+    stage:
+      name: fix_answer
+      model: ${_models.qwen35}
+      response_model: DataCurator.pipeline.schemas.TranslationReview
+      output_field: review_answer
+      prompt:
+        - role: user
+          template: improve-translations.j2
+      modifiers:
+        - _target_: DataCurator.pipeline.modifiers.google_translate.GoogleTranslateModifier
+          source: answer_en
+          target: answer_gtranslate
+          source_language_code: en
+          target_language_code: pl
+        - _target_: DataCurator.pipeline.modifiers.languagetool.LanguageToolModifier
+          source: answer
+          issues_field: language_tool_answer
+          language: pl-PL
+          remote_server: http://languagetool.loc
+        # Inject per-experiment constants the dataset doesn't carry. These are
+        # literals, so they need ConstantsModifier — RenameModifier only moves
+        # the value of an existing field and can't fabricate one.
+        - _target_: DataCurator.pipeline.modifiers.constants.ConstantsModifier
+          values:
+            source_language: English
+            target_language: Polish
+        # Align the dataset's column names with what the prompt expects.
+        # keep=true COPIES instead of renaming, so the originals
+        # (answer_en, answer_gtranslate, ...) survive into later stages — the
+        # final pick stage still needs the English source and the GT reference.
+        - _target_: DataCurator.pipeline.modifiers.rename.RenameModifier
+          keep: true
+          fields:
+            answer_gtranslate: google_translation
+            answer_en: source_text
+            answer: target_text
+            language_tool_answer: language_tool_fixes
+  fix_question:
+    enabled: true
+    stage:
+      name: fix_question
+      model: ${_models.qwen35}
+      response_model: DataCurator.pipeline.schemas.TranslationReview
+      output_field: review_question
+      prompt:
+        - role: user
+          template: improve-translations.j2
+      modifiers:
+        - _target_: DataCurator.pipeline.modifiers.google_translate.GoogleTranslateModifier
+          source: question_en
+          target: question_gtranslate
+          source_language_code: en
+          target_language_code: pl
+        - _target_: DataCurator.pipeline.modifiers.languagetool.LanguageToolModifier
+          source: question
+          issues_field: language_tool_question
+          language: pl-PL
+          remote_server: http://languagetool.loc
+        # Inject per-experiment constants the dataset doesn't carry. These are
+        # literals, so they need ConstantsModifier — RenameModifier only moves
+        # the value of an existing field and can't fabricate one.
+        - _target_: DataCurator.pipeline.modifiers.constants.ConstantsModifier
+          # This stage reads the first stage's output, which already carries
+          # these constants — tolerate the pre-existing fields instead of raising.
+          exists_ok: true
+          values:
+            source_language: English
+            target_language: Polish
+        # Align the dataset's column names with what the prompt expects.
+        - _target_: DataCurator.pipeline.modifiers.rename.RenameModifier
+          # Same here: the rename targets already exist from the first stage's
+          # output, so allow overwriting them rather than failing the clobber check.
+          # keep=true again, so question_en / question_gtranslate survive for
+          # the final pick stage below.
+          keep: true
+          exists_ok: true
+          fields:
+            question_gtranslate: google_translation
+            question_en: source_text
+            question: target_text
+            language_tool_question: language_tool_fixes
+  pick_the_best_translations:
+    enabled: true
+    stage:
+      name: pick_the_best_translations
+      model: ${_models.qwen35}
+      response_model: DataCurator.pipeline.schemas.QAPairSelection
+      output_field: the_best_translations
+      prompt:
+        - role: user
+          template: qa-pick-translations.j2
+      modifiers:
+        - _target_: DataCurator.pipeline.modifiers.constants.ConstantsModifier
+          # This stage reads the first stage's output, which already carries
+          # these constants — tolerate the pre-existing fields instead of raising.
+          exists_ok: true
+          values:
+            source_language: English
+            target_language: Polish
+        # Fold the three QUESTION rewrites the `fix_question` stage produced
+        # — review_question.{improved_primary, improved_polished,
+        # improved_alternative} — into the [{id, text}, ...] list the prompt
+        # iterates as candidates [Q1] / [Q2] / [Q3]. (Plain rename/constants
+        # can't build a list out of nested sibling fields.)
+        - _target_: DataCurator.pipeline.modifiers.candidates.CandidatesModifier
+          target: question_candidates
+          id_prefix: Q
+          sources:
+            - review_question.improved_primary
+            - review_question.improved_polished
+            - review_question.improved_alternative
+        # Same for the ANSWER rewrites from `fix_answer` → [A1] / [A2] / [A3].
+        - _target_: DataCurator.pipeline.modifiers.candidates.CandidatesModifier
+          target: answer_candidates
+          id_prefix: A
+          sources:
+            - review_answer.improved_primary
+            - review_answer.improved_polished
+            - review_answer.improved_alternative
+        # Point the prompt's remaining inputs at the original dataset columns
+        # the upstream stages kept (their renames use keep=true): the English
+        # source pair and the Google-Translate references the prompt uses only
+        # for word-form checking. keep=true here too so nothing is mutated away.
+        - _target_: DataCurator.pipeline.modifiers.rename.RenameModifier
+          keep: true
+          exists_ok: true
+          fields:
+            question_en: source_question
+            answer_en: source_answer
+            question_gtranslate: reference_question
+            answer_gtranslate: reference_answer
+
+

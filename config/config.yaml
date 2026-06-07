@@ -1,0 +1,22 @@
+# Top-level pipeline config. Composes an experiment (which declares the
+# ordered flow of stages) with a notifications backend, and exposes the
+# runner-level knobs that govern persistence, resume and stage pausing.
+defaults:
+  - experiment: qooaq
+  - notifications: ntfy
+  - reporting: s3
+  - _self_
+
+runner:
+  concurrency: 8            # max records processed in parallel per stage
+  resume: true              # skip already-processed records when the stage config is unchanged
+  debug: false               # extra per-record logging (every stage output is persisted regardless)
+  id_field: id              # record key used to match/skip work across reruns
+  shard_size: 20          # records per output shard; each full shard is uploaded as an artifact (when reporting is on)
+  pause_between_stages: true  # block for operator confirmation before each stage (for manual steps in between)
+  start_from: null          # resume the pipeline at this stage id, reading the prior stage's output
+  progress: true            # live stage + per-modifier progress bars (auto-disabled when not on a TTY)
+
+hydra:
+  job:
+    chdir: false            # keep the original working dir so dataset paths resolve as written

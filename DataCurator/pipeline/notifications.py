@@ -50,7 +50,13 @@ def notify(
         logger.warning(f"Unknown notifications backend: {backend!r}")
         return
 
-    server = str(_cfg_get(notifications_cfg, "server", "https://ntfy.sh")).rstrip("/")
+    server = _cfg_get(notifications_cfg, "server")
+    if not server:
+        raise ValueError(
+            "ntfy notifications enabled but `notifications.server` is unset; "
+            "set it (e.g. via $NTFY_URL) or disable notifications"
+        )
+    server = str(server).rstrip("/")
     topic = _cfg_get(notifications_cfg, "topic")
     if not topic:
         logger.warning("ntfy notifications enabled but `notifications.topic` is unset")
