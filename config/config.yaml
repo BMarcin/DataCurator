@@ -2,7 +2,7 @@
 # ordered flow of stages) with a notifications backend, and exposes the
 # runner-level knobs that govern persistence, resume and stage pausing.
 defaults:
-  - experiment: qooaq
+  - experiment: documents_fiqa
   - notifications: ntfy
   - reporting: s3
   - _self_

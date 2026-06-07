@@ -8,6 +8,7 @@ You receive:
   - a SOURCE text in {{ source_language }},
   - a TARGET text in {{ target_language }} — this is the translation you
     are reviewing,
+{%- if google_translation %}
   - a REFERENCE translation of the SOURCE in {{ target_language }} produced
     by Google Translate. The REFERENCE is provided ONLY as a source of
     correct word forms — Google Translate reliably produces text without
@@ -16,6 +17,7 @@ You receive:
     word choices, terminology, phrasing, register, and idiomaticity are
     often mediocre or wrong. You are NOT reviewing the REFERENCE and you
     must NOT treat it as a gold standard for translation quality.
+{%- endif %}
   - optionally, LanguageTool findings on the TARGET.
 
 Your job is to:
@@ -26,6 +28,7 @@ Your job is to:
 Write all analysis in {{ source_language }}. Write all translations in
 {{ target_language }}.
 
+{% if google_translation %}
 How to use the REFERENCE:
 - USE IT for: checking whether a word in the TARGET is correctly spelled
   and correctly inflected (correct case, gender, number, agreement, verb
@@ -42,6 +45,7 @@ How to use the REFERENCE:
   word form is.
 - DO NOT copy the REFERENCE into your improved translations. The REFERENCE
   is evidence about word forms, not a template to follow.
+{% endif %}
 
 # EVALUATION CATEGORIES
 Use these categories (based on MQM). Assign each issue to exactly one:
@@ -73,8 +77,10 @@ Use these categories (based on MQM). Assign each issue to exactly one:
 - Only report genuine errors in the TARGET. Do not manufacture issues to
   justify edits. Do not penalize valid stylistic choices just because you
   would phrase them differently.
+{%- if google_translation %}
 - The REFERENCE is a hint, not the truth. If the TARGET and the REFERENCE
   differ but the TARGET is still correct, that is not an error.
+{%- endif %}
 - Preserve the SOURCE's formatting in your translations exactly: line
   breaks, trailing/leading whitespace, capitalization patterns, ellipses,
   unfinished sentences, ALL-CAPS, special characters, emoji.
@@ -88,9 +94,9 @@ Use these categories (based on MQM). Assign each issue to exactly one:
 - If the SOURCE and the TARGET are identical and that is appropriate
   (proper nouns, code, brand names), this is not an error.
 - For inflection, agreement, spelling, and basic grammar: defer to
-  evidence. If LanguageTool flags it AND the REFERENCE uses a different
-  form than the TARGET, this is almost certainly an error in the TARGET.
-  Do not override these signals based on your own intuition unless you
+  evidence.{% if google_translation %} If LanguageTool flags it AND the REFERENCE uses a different
+  form than the TARGET, this is almost certainly an error in the TARGET.{% else %} If LanguageTool flags it, this is almost certainly an error in
+  the TARGET.{% endif %} Do not override these signals based on your own intuition unless you
   can cite a concrete reason.
 
 {% if language_tool_fixes %}
@@ -120,6 +126,7 @@ Polish inflection (case, gender, number, verb aspect, agreement) is highly
 complex. You MUST trust evidence over your baseline judgment:
 - If LanguageTool flags an inflection error, set `is_real_issue` to true
   by default.
+{%- if google_translation %}
 - If the REFERENCE uses a different inflected form of the SAME word as
   the TARGET (e.g., TARGET says "grzanków" and REFERENCE says "grzanek" —
   same lemma, different ending), that is strong corroborating evidence of
@@ -127,13 +134,14 @@ complex. You MUST trust evidence over your baseline judgment:
   Note: this applies only when it is the same word in a different form.
   If the REFERENCE uses a different word entirely, that is a word-choice
   difference and is NOT evidence of an error in the TARGET.
+{%- endif %}
 - You may only set it to false if you can cite a specific, concrete
   reason (e.g., "This is a proper brand name" or "The SOURCE specifically
   requires this exact broken syntax").
 - If `is_real_issue` is true, you MUST create a corresponding object in
-  the `issues` array using LanguageTool's suggestion (or the REFERENCE's
+  the `issues` array using LanguageTool's suggestion{% if google_translation %} (or the REFERENCE's
   form, if it disagrees with LanguageTool — prefer the REFERENCE for
-  inflected word forms when both are available).
+  inflected word forms when both are available){% endif %}.
 
 Each finding shows the offending span wrapped in « » so you can locate it
 in the TARGET. The `context` field is a short window of surrounding TARGET
@@ -160,7 +168,7 @@ Produce three {{ target_language }} translations of the SOURCE:
   `suggested_fix` from your `issues` list. Do not change any other words,
   word order, or punctuation. Every `suggested_fix` from the `issues`
   list MUST be visible in this string. If `issues` is empty, this MUST
-  match the TARGET exactly. Do NOT copy from the REFERENCE.
+  match the TARGET exactly.{% if google_translation %} Do NOT copy from the REFERENCE.{% endif %}
 
 - improved_polished — A fluent, natural-sounding version. Start from
   improved_primary and refine it for fluency, natural
@@ -168,8 +176,8 @@ Produce three {{ target_language }} translations of the SOURCE:
   Stay faithful to the SOURCE. You may re-order clauses, swap synonyms,
   and adjust phrasing. This field MUST differ from improved_primary in
   wording — if no polishing seems necessary, find at least one fluency or
-  naturalness improvement to apply. You MAY draw on the REFERENCE for
-  ideas but do not copy it wholesale.
+  naturalness improvement to apply.{% if google_translation %} You MAY draw on the REFERENCE for
+  ideas but do not copy it wholesale.{% endif %}
 
 - improved_alternative — A meaningfully different rendering of the
   SOURCE that is also accurate and natural. It MUST differ from
@@ -187,8 +195,8 @@ Produce three {{ target_language }} translations of the SOURCE:
 # EXAMPLE
 SOURCE: Set the timer for two minutes.
 TARGET: Ustaw minutnik na dwa minuty.
-REFERENCE: Ustaw minutnik na dwie minuty.
-LANGUAGETOOL FINDINGS:
+{% if google_translation %}REFERENCE: Ustaw minutnik na dwie minuty.
+{% endif %}LANGUAGETOOL FINDINGS:
 - Błąd odmiany. Prawdopodobnie powinno być: dwie minuty.
   error_text: dwa minuty
   context: Ustaw minutnik na dwa minuty.
@@ -201,7 +209,7 @@ OUTPUT:
     {
       "finding_message": "Błąd odmiany. Prawdopodobnie powinno być: dwie minuty.",
       "is_real_issue": true,
-      "reason": "LanguageTool flagged a Polish inflection error. The REFERENCE uses the correctly inflected form 'dwie minuty' for the same word, corroborating the finding. Accepted as a real inflection error."
+      "reason": "LanguageTool flagged a Polish inflection error.{% if google_translation %} The REFERENCE uses the correctly inflected form 'dwie minuty' for the same word, corroborating the finding.{% endif %} Accepted as a real inflection error."
     }
   ],
   "issues": [
@@ -209,7 +217,7 @@ OUTPUT:
       "category": "linguistic_conventions",
       "severity": "major",
       "span_in_target": "dwa minuty",
-      "explanation": "Wrong gender agreement. The noun 'minuta' is feminine, so the numeral must be 'dwie', not the masculine/neuter 'dwa'. The REFERENCE uses the correctly inflected form.",
+      "explanation": "Wrong gender agreement. The noun 'minuta' is feminine, so the numeral must be 'dwie', not the masculine/neuter 'dwa'.{% if google_translation %} The REFERENCE uses the correctly inflected form.{% endif %}",
       "suggested_fix": "dwie minuty"
     }
   ],
@@ -224,6 +232,7 @@ SOURCE ({{ source_language }}):
 
 TARGET ({{ target_language }}) — this is the translation you are reviewing:
 {{ target_text }}
-
+{% if google_translation %}
 REFERENCE ({{ target_language }}) — Google Translate output, for your reference only:
 {{ google_translation }}
+{% endif %}

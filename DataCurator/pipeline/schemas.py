@@ -8,7 +8,9 @@ LanguageTool finding, an MQM-classified issue list, and three rewrites of
 increasing freedom. ``QAPairSelection`` matches
 ``prompts/qa-pick-translations.j2``: the final selection and harmonization of
 one translated question-answer pair from the candidates those reviews
-produced.
+produced. ``TranslationSelection`` matches ``prompts/pick-translation.j2``:
+the single-segment analogue — rank three candidate translations of ONE source
+segment and return the best one verbatim (no harmonization, no pairing).
 """
 from __future__ import annotations
 
@@ -149,3 +151,45 @@ class QAPairSelection(BaseModel):
     final_question: str = Field(description="The selected question after harmonization edits.")
     final_answer: str = Field(description="The selected answer after harmonization edits.")
     overall_quality: Quality
+
+
+# --------------------------------------------------------------------------- #
+# pick-translation.j2 — select the best of three single-segment translations
+# --------------------------------------------------------------------------- #
+# Single-segment selection judges one source segment, so it raises only the
+# six base MQM categories (``Category``); it has no second segment to be
+# inconsistent or irrelevant with, so ``consistency``/``relevance`` do not apply.
+
+
+class SegmentCandidateIssue(BaseModel):
+    """A flaw found in one candidate, judged against the source segment."""
+
+    category: Category
+    severity: Severity
+    span: str = Field(description="The offending span in this candidate.")
+    explanation: str = Field(description="Why this span is an error.")
+
+
+class SegmentCandidateEvaluation(BaseModel):
+    """The verdict on a single candidate translation."""
+
+    id: str = Field(description="Candidate id, e.g. 'C1'.")
+    quality: Quality
+    issues: List[SegmentCandidateIssue] = Field(default_factory=list)
+
+
+class TranslationSelection(BaseModel):
+    """Selection of the best of three candidate translations of one segment.
+
+    Matches the output contract of ``prompts/pick-translation.j2``: a
+    per-candidate evaluation, a full ranking, the chosen candidate's id and
+    rationale, and the winning translation returned verbatim.
+    """
+
+    candidate_evaluations: List[SegmentCandidateEvaluation] = Field(default_factory=list)
+    ranking: List[str] = Field(
+        default_factory=list, description="Every candidate id exactly once, best first."
+    )
+    selected_id: str = Field(description="Id of the winning candidate; equals ranking[0].")
+    selection_rationale: str = Field(description="Why this candidate beats the other two.")
+    selected_translation: str = Field(description="The winning candidate, verbatim.")
