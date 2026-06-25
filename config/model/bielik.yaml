@@ -6,6 +6,7 @@ temperature: 0.2
 max_tokens: 24000
 concurrency: 8
 retries: 2
+timeout: 600        # per-request timeout in seconds (null = openai default of 600s)
 
 # Sampling parameters. `top_p` and `presence_penalty` are forwarded
 # as native OpenAI fields; `top_k`, `min_p` and `repetition_penalty`

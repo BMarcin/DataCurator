@@ -82,6 +82,16 @@ class NullReporter:
     ) -> None:
         """No-op artifact upload."""
 
+    def ensure_artifact(
+        self,
+        local_path: Path,
+        *,
+        label: Optional[str] = None,
+        complete: bool = True,
+        dest: Optional[str] = None,
+    ) -> None:
+        """No-op artifact reconcile."""
+
     def finish(
         self, state: StateLike = JobState.SUCCEEDED, detail: Optional[Dict[str, Any]] = None
     ) -> None:
@@ -240,18 +250,54 @@ class JobReporter:
         key = dest or f"artifacts/{local_path.name}"
         try:
             self._sink.upload_file(local_path, self._key(key))
-            self._manifest[key] = {
-                "key": key,
-                "label": label or local_path.name,
-                "size_bytes": local_path.stat().st_size,
-                "updated_at": now_iso(),
-                "complete": complete,
-            }
-            manifest = {"artifacts": list(self._manifest.values())}
-            self._sink.put_bytes(self._key("manifest.json"), orjson.dumps(manifest))
-            self._artifacts_rev += 1
+            self._register(key, local_path, label or local_path.name, complete)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"job reporting: artifact upload failed ({local_path}): {exc}")
+
+    def ensure_artifact(
+        self,
+        local_path: Path,
+        *,
+        label: Optional[str] = None,
+        complete: bool = True,
+        dest: Optional[str] = None,
+    ) -> None:
+        """Register ``local_path`` in the manifest, uploading only if S3 lacks it.
+
+        The reconcile counterpart to :meth:`upload_artifact`: on resume a stage's
+        shards may already sit in S3 from an earlier process but be absent from
+        *this* process's in-memory manifest. This re-lists them (HEAD-gated, so
+        bytes already present are not re-sent) so ``manifest.json`` reflects every
+        artifact on S3, not just the ones this process uploaded.
+        """
+        if not self.upload_artifacts:
+            return
+        key = dest or f"artifacts/{local_path.name}"
+        try:
+            if not self._sink.exists(self._key(key)):
+                self._sink.upload_file(local_path, self._key(key))
+            self._register(key, local_path, label or local_path.name, complete)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"job reporting: artifact reconcile failed ({local_path}): {exc}")
+
+    def _register(self, key: str, local_path: Path, label: str, complete: bool) -> None:
+        """Record ``key`` in the manifest and re-publish ``manifest.json``.
+
+        Shared tail of :meth:`upload_artifact` and :meth:`ensure_artifact`: S3
+        has no append, so the whole manifest is rebuilt from ``_manifest`` and
+        re-PUT. Bumps ``_artifacts_rev`` so the next status push tells the
+        dashboard the artifact list changed.
+        """
+        self._manifest[key] = {
+            "key": key,
+            "label": label,
+            "size_bytes": local_path.stat().st_size,
+            "updated_at": now_iso(),
+            "complete": complete,
+        }
+        manifest = {"artifacts": list(self._manifest.values())}
+        self._sink.put_bytes(self._key("manifest.json"), orjson.dumps(manifest))
+        self._artifacts_rev += 1
 
     # -- terminal state -----------------------------------------------------
     def finish(

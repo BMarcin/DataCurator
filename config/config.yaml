@@ -2,20 +2,30 @@
 # ordered flow of stages) with a notifications backend, and exposes the
 # runner-level knobs that govern persistence, resume and stage pausing.
 defaults:
-  - experiment: documents_fiqa
-  - notifications: ntfy
-  - reporting: s3
+  - experiment: documents_trivia_no_thinking
+  - notifications: ntfy_pub
+  - reporting: disabled
   - _self_
 
 runner:
-  concurrency: 8            # max records processed in parallel per stage
+  concurrency: 16            # max records processed in parallel per stage
   resume: true              # skip already-processed records when the stage config is unchanged
   debug: false               # extra per-record logging (every stage output is persisted regardless)
   id_field: id              # record key used to match/skip work across reruns
-  shard_size: 20          # records per output shard; each full shard is uploaded as an artifact (when reporting is on)
-  pause_between_stages: true  # block for operator confirmation before each stage (for manual steps in between)
+  shard_size: 1000          # records per output shard; each full shard is uploaded as an artifact (when reporting is on)
+  pause_between_stages: false  # block for operator confirmation before each stage (for manual steps in between)
   start_from: null          # resume the pipeline at this stage id, reading the prior stage's output
   progress: true            # live stage + per-modifier progress bars (auto-disabled when not on a TTY)
+  # Exception types (dotted import paths) that, when raised by a stage after its
+  # retries, flag the offending record with `error: true` instead of aborting
+  # the run. Any exception NOT listed still fails the pipeline. Set to [] to
+  # abort on every error.
+  flag_on_errors:
+    - openai.LengthFinishReasonError   # output truncated at max_tokens
+    - openai.BadRequestError           # prompt overflows the model context (vLLM 400)
+    - openai.APITimeoutError           # request still timing out after retries
+    - DataCurator.pipeline.stages.llm.UnparseableOutputError  # reply not parseable into the schema (e.g. refusal)
+    - DataCurator.pipeline.validators.ResponseValidationError  # output implausible vs reference (e.g. truncated rewrite, stray escape characters)
 
 hydra:
   job:

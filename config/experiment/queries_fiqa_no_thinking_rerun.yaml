@@ -1,0 +1,124 @@
+# @package _global_
+#
+# RERUN of `queries_fiqa_no_thinking`, processing only the records that the
+# original run flagged with `error: true`. It is a *separate* experiment — its
+# own `experiment_name`, output dir and dashboard job — so it never touches the
+# original run's shards or resume state.
+#
+# How it works:
+#   * `dataset.input` points at the original run's FIRST-stage output. Flagged
+#     records there are pristine originals plus `error*` fields (the runner
+#     flags the untouched input), so re-running the whole pipeline on them is
+#     clean.
+#   * The first stage's `drop_fields` strips the `error*` bookkeeping so the
+#     records are reprocessed instead of passed through, and its `filters` keep
+#     only the failures (`error == True`).
+#
+# Run it with:
+#   uv run python run_pipeline.py experiment=queries_fiqa_no_thinking_rerun
+# After it finishes, merge the fixed rows back by `id` from
+#   dataset/fix_queries_fiqa_no_thinking_rerun/
+defaults:
+  - /model/qwen35_stage1_no_thinking@_models.qwen35_stage1_no_thinking
+  - /model/qwen35_stage2@_models.qwen35_stage2
+  - /stages/llm@pipeline.fix_queries
+  - /stages/llm@pipeline.pick_the_best_translation
+  - _self_
+
+experiment_name: fix_queries_fiqa_no_thinking_rerun
+
+job:
+  type: data-pipeline
+  links: []
+
+dataset:
+  # The original run's first-stage output; the filter below selects its failures.
+  input: dataset/fix_queries_fiqa_no_thinking/00_fix_queries/step-*.jsonl
+  output_dir: dataset/${experiment_name}
+  limit: null
+
+order:
+  - fix_queries
+  - pick_the_best_translation
+
+pipeline:
+  # First pass: re-review only the records the original run flagged.
+  fix_queries:
+    enabled: true
+    # Clear the previous run's flags so these records are reprocessed rather
+    # than passed through as already-errored.
+    drop_fields: [error, error_message, error_type, error_stage]
+    # Keep only the records that failed last time.
+    filters:
+      - _target_: DataCurator.pipeline.filters.ExpressionFilter
+        expression: "error == True"
+    stage:
+      name: fix_queries
+      model: ${_models.qwen35_stage1_no_thinking}
+      response_model: DataCurator.pipeline.schemas.TranslationReview
+      output_field: review_answer
+      prompt:
+        - role: user
+          template: improve-translations.j2
+      validators:
+        - _target_: DataCurator.pipeline.validators.LengthRatioValidator
+          fields: [improved_primary, improved_polished]
+          reference: target_text
+          min_ratio: 0.6
+          max_ratio: 1.6
+        - _target_: DataCurator.pipeline.validators.CharacterCountValidator
+          fields: [improved_primary, improved_polished]
+          reference: source_text
+          characters: ['\', '!', '?', '[', ']', '{', '}', '|', '@']
+      modifiers:
+        - _target_: DataCurator.pipeline.modifiers.google_translate.GoogleTranslateModifier
+          source: text
+          target: text_gtranslate
+          source_language_code: en
+          target_language_code: pl
+        - _target_: DataCurator.pipeline.modifiers.languagetool.LanguageToolModifier
+          source: text_gtranslate
+          issues_field: language_tool_answer
+          language: pl-PL
+          remote_server: http://languagetool.loc
+        - _target_: DataCurator.pipeline.modifiers.constants.ConstantsModifier
+          values:
+            source_language: English
+            target_language: Polish
+            google_translation: ""
+        - _target_: DataCurator.pipeline.modifiers.rename.RenameModifier
+          keep: true
+          fields:
+            text: source_text
+            text_gtranslate: target_text
+            language_tool_answer: language_tool_fixes
+  # Second pass: rank the rewrites and return the single best translation.
+  pick_the_best_translation:
+    enabled: true
+    stage:
+      name: pick_the_best_translation
+      model: ${_models.qwen35_stage2}
+      response_model: DataCurator.pipeline.schemas.TranslationSelection
+      output_field: the_best_translation
+      prompt:
+        - role: user
+          template: pick-translation.j2
+      modifiers:
+        - _target_: DataCurator.pipeline.modifiers.constants.ConstantsModifier
+          exists_ok: true
+          values:
+            source_language: English
+            target_language: Polish
+            google_translation: ""
+        - _target_: DataCurator.pipeline.modifiers.candidates.CandidatesModifier
+          target: candidates
+          id_prefix: C
+          sources:
+            - review_answer.improved_primary
+            - review_answer.improved_polished
+            - review_answer.improved_alternative
+        - _target_: DataCurator.pipeline.modifiers.rename.RenameModifier
+          keep: true
+          exists_ok: true
+          fields:
+            text: source_text

@@ -56,6 +56,16 @@ class S3Sink:
                 return None
             raise
 
+    def exists(self, key: str) -> bool:
+        """True if ``key`` exists, via a HEAD (no body transfer)."""
+        try:
+            self._client.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404", "NotFound"):
+                return False
+            raise
+
     def upload_file(self, local_path: Path, key: str) -> None:
         """Upload a local file to ``key`` (boto3 handles multipart for big files)."""
         self._client.upload_file(str(local_path), self.bucket, key)

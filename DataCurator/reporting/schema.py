@@ -78,11 +78,18 @@ class StageInfo:
     state: str
     done: Optional[int] = None
     total: Optional[int] = None
+    errored: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a ``detail.stages[]`` entry, omitting nulls."""
         return _compact(
-            {"id": self.id, "state": self.state, "done": self.done, "total": self.total}
+            {
+                "id": self.id,
+                "state": self.state,
+                "done": self.done,
+                "total": self.total,
+                "errored": self.errored,
+            }
         )
 
 

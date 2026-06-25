@@ -1,0 +1,28 @@
+# Qwen3.6-35B-A3B-FP8 served via vLLM on the local GPU box.
+name: Qwen/Qwen3.6-35B-A3B-FP8
+api_base: http://localhost:8000/v1
+api_key: EMPTY
+temperature: 0.5
+max_tokens: 85000
+concurrency: 32      # in-flight LLM calls; keep below the server's --max-num-seqs (48) and watch GPU KV cache usage
+retries: 3
+timeout: 1200        # per-request timeout in seconds (null = openai default of 600s)
+
+# Sampling parameters. `top_p` and `presence_penalty` are forwarded
+# as native OpenAI fields; `top_k`, `min_p` and `repetition_penalty`
+# are vLLM extensions and are sent inside `extra_body`.
+top_p: 0.8
+top_k: 20
+min_p: 0.0
+presence_penalty: 0.0
+repetition_penalty: 1.0
+
+# Qwen3 thinking-mode toggle. Forwarded as
+# `extra_body.chat_template_kwargs.enable_thinking`. Set to false to
+# disable thinking blocks; comment out to leave the server default.
+enable_thinking: false
+
+# Free-form passthrough merged into the request's `extra_body` last,
+# so anything here overrides the fields above. Useful for one-off
+# vLLM kwargs we haven't surfaced explicitly.
+extra_body: {}

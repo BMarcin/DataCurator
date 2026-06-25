@@ -35,6 +35,11 @@ from loguru import logger
 # Sentinel distinguishing "argument not supplied" from an explicit ``None``.
 _MISSING: Any = object()
 
+# Attribute under which a failing ``Stage.run`` stashes its partial context, so
+# the runner can keep modifier-added fields on a record it flags (see
+# ``errored_context``).
+_CONTEXT_ATTR = "_stage_context"
+
 
 class StageContext(MutableMapping):
     """A mutable bag of named variables flowing through a stage.
@@ -104,6 +109,17 @@ class StageContext(MutableMapping):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self._data!r})"
+
+
+def errored_context(exc: BaseException) -> Optional["StageContext"]:
+    """Return the partial context a failed :meth:`Stage.run` attached, or ``None``.
+
+    When ``run`` raises, it stashes the (already modifier-enriched) context on the
+    exception so the runner can flag the record while keeping fields added before
+    the failure — e.g. a Google translation produced in the ``before`` phase.
+    """
+    ctx = getattr(exc, _CONTEXT_ATTR, None)
+    return ctx if isinstance(ctx, StageContext) else None
 
 
 class ModifierPhase(str, Enum):
@@ -236,9 +252,19 @@ class Stage(ABC):
         are merged in as additional variables, overriding ``data``.
         """
         context = self._as_context(data, variables)
-        await self._apply_modifiers(context, ModifierPhase.BEFORE)
-        await self.process(context)
-        await self._apply_modifiers(context, ModifierPhase.AFTER)
+        try:
+            await self._apply_modifiers(context, ModifierPhase.BEFORE)
+            await self.process(context)
+            await self._apply_modifiers(context, ModifierPhase.AFTER)
+        except Exception as exc:
+            # Stash the partially-enriched context so the runner can keep
+            # modifier-added fields (e.g. a Google translation from the
+            # ``before`` phase) on a record it flags instead of aborting. The
+            # exception's type is preserved, so ``runner.flag_on_errors`` still
+            # matches; ``errored_context`` reads it back out.
+            if getattr(exc, _CONTEXT_ATTR, None) is None:
+                setattr(exc, _CONTEXT_ATTR, context)
+            raise
         return context
 
     async def _apply_modifiers(self, context: StageContext, phase: ModifierPhase) -> None:

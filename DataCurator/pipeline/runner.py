@@ -34,6 +34,11 @@ Behaviour, following the project's pipeline-design rules:
   one stage to pause only there, or unset the global default to pause
   everywhere but a chosen stage.
 * **Observable.** ntfy notifications fire at the configured points.
+* **Fault-tolerant (configurable).** ``runner.flag_on_errors`` lists exception
+  types that, when raised by a stage after its retries, flag the offending
+  record with ``error: true`` (plus an explanation) instead of aborting the
+  run; later stages pass flagged records through untouched. Any exception not
+  listed still fails the pipeline.
 """
 from __future__ import annotations
 
@@ -42,7 +47,7 @@ import glob
 import hashlib
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
 
@@ -60,8 +65,9 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from DataCurator.pipeline.filters import RecordFilter
 from DataCurator.pipeline.notifications import notify
-from DataCurator.pipeline.stage import ModifierPhase, Stage, StageContext
+from DataCurator.pipeline.stage import ModifierPhase, Stage, StageContext, errored_context
 from DataCurator.reporting import JobState, NullReporter, Progress, Reporter, StageInfo
 
 
@@ -74,6 +80,11 @@ class StageSpec:
     enabled: bool
     signature: str
     pause_before: Optional[bool] = None  # per-stage override of runner.pause_between_stages
+    # Input record selectors (all must keep a record) and bookkeeping keys to
+    # strip from each input record before processing — applied to this stage's
+    # input ahead of resume/limit. See `_select_input`.
+    filters: List[RecordFilter] = field(default_factory=list)
+    drop_fields: List[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -107,6 +118,16 @@ def build_pipeline(cfg: DictConfig) -> List[StageSpec]:
             )
         if not stage.name or stage.name == type(stage).__name__:
             stage.name = stage_id
+        # Input filters are runner metadata (a sibling of `stage:`), instantiated
+        # from their `_target_` like modifiers; filtering decides *which* records
+        # run, which is the runner's concern, not the Stage's.
+        filters = list(hydra.utils.instantiate(node.get("filters")) or [])
+        for f in filters:
+            if not isinstance(f, RecordFilter):
+                raise TypeError(
+                    f"stage {stage_id!r} filter must be a RecordFilter, got {type(f).__name__}"
+                )
+        drop_fields = [str(name) for name in (node.get("drop_fields") or [])]
         specs.append(
             StageSpec(
                 id=stage_id,
@@ -114,6 +135,8 @@ def build_pipeline(cfg: DictConfig) -> List[StageSpec]:
                 enabled=bool(node.get("enabled", True)),
                 signature=_signature(stage_id, node),
                 pause_before=None if pause_before is None else bool(pause_before),
+                filters=filters,
+                drop_fields=drop_fields,
             )
         )
     return specs
@@ -346,12 +369,20 @@ class PipelineRunner:
         # Live progress bars: on by config (default true), but only when attached
         # to a TTY so piped/unattended runs keep plain loguru output.
         self.progress = bool(_get(runner_cfg, "progress", True)) and sys.stderr.isatty()
+        # Exception types that flag the offending record instead of aborting the
+        # run. Resolved once from dotted paths; an empty tuple restores strict
+        # abort-on-any-error behaviour (``except ()`` catches nothing).
+        self.flag_on_errors: Tuple[type, ...] = _resolve_exception_types(
+            _get(runner_cfg, "flag_on_errors", [])
+        )
         self.notifications_cfg = notifications_cfg
         # Best-effort dashboard reporting; NullReporter when disabled/unconfigured.
         self.reporter: Reporter = reporter or NullReporter()
         # Live counters the heartbeat loop reads while a stage runs.
         self._processed = 0
         self._stage_total = 0
+        # Records flagged (not aborted) in the current stage; reset per stage.
+        self._errored = 0
         # Bounds how many closed shards upload concurrently so a burst of
         # rotations never saturates the link or starves the workers.
         self._upload_sem = asyncio.Semaphore(4)
@@ -415,7 +446,10 @@ class PipelineRunner:
         # Normally the last stage's directory; falls back to the output dir when
         # no stage ran (e.g. every stage disabled), so callers always get a Path.
         final_output = current_input if isinstance(current_input, Path) else self.output_dir
-        self._notify_pipeline_end(final_output)
+        total_errored = self._total_errored()
+        if total_errored:
+            logger.info(f"pipeline {self.name!r}: {total_errored} record(s) flagged across all stages")
+        self._notify_pipeline_end(final_output, total_errored)
         self.reporter.finish(JobState.SUCCEEDED)
         return final_output
 
@@ -444,11 +478,15 @@ class PipelineRunner:
     ) -> None:
         """Process one stage over its input, persisting results as shards."""
         records = _read_records(input_src)
+        for i, record in enumerate(records):
+            record.setdefault(self.id_field, i)
+        # Strip configured bookkeeping fields and apply input filters before the
+        # limit, so `limit` caps the *selected* rows (e.g. the first N failures
+        # of a rerun), not the raw input.
+        records = self._select_input(spec, records)
         if self.limit is not None and len(records) > self.limit:
             logger.info(f"stage {spec.id!r}: limiting input to first {self.limit} of {len(records)} rows")
             records = records[: self.limit]
-        for i, record in enumerate(records):
-            record.setdefault(self.id_field, i)
 
         meta_path = stage_dir / "meta.json"
         fresh = not (
@@ -480,12 +518,14 @@ class PipelineRunner:
         # Report stage start and prime the live counters the heartbeat loop reads.
         self._processed = len(done_ids)
         self._stage_total = len(todo) + len(done_ids)
+        self._errored = 0
         heartbeat_task: Optional[asyncio.Task] = None
         if self.reporter.enabled:
             self._stage_state[spec.id] = {
                 "state": "running",
                 "done": self._processed,
                 "total": self._stage_total,
+                "errored": 0,
             }
             self.reporter.update(
                 progress=Progress(self._processed, self._stage_total, "records"),
@@ -528,10 +568,22 @@ class PipelineRunner:
                 )
 
             async def worker(record: dict) -> None:
-                """Run the stage on one record and append the result to a shard."""
+                """Run the stage on one record (or pass/flag it) and append to a shard."""
                 async with semaphore:
-                    context = await spec.stage.run(dict(record))
-                    row = orjson.dumps(context.to_dict(), option=orjson.OPT_APPEND_NEWLINE)
+                    if record.get("error"):  # flagged upstream → pass through untouched
+                        out = dict(record)
+                    else:
+                        try:
+                            context = await spec.stage.run(dict(record))
+                            out = context.to_dict()
+                        except self.flag_on_errors as exc:  # configured per-record failures
+                            # Flag the modifier-enriched context the stage stashed
+                            # on the exception (so fields like a Google translation
+                            # survive), falling back to the raw record if absent.
+                            enriched = errored_context(exc)
+                            base = enriched.to_dict() if enriched is not None else record
+                            out = self._flag_record(base, spec.id, exc)
+                    row = orjson.dumps(out, option=orjson.OPT_APPEND_NEWLINE)
                     async with write_lock:
                         # Exactly one worker — the one whose write fills a shard —
                         # gets its path back, so each closed shard is uploaded once.
@@ -562,6 +614,7 @@ class PipelineRunner:
                     "state": "failed",
                     "done": self._processed,
                     "total": self._stage_total,
+                    "errored": self._errored,
                 }
                 # Earlier shards already uploaded as complete; publish the final
                 # partial shard (incomplete) so its finished records aren't lost.
@@ -584,9 +637,18 @@ class PipelineRunner:
         # written at stage start (so crashes resume), so there is nothing to
         # record here beyond the final shard.
         final_shard = writer.close()
-        self._notify_stage(spec, "on_stage_end", f"{len(todo)} records processed")
+        flagged_note = f", {self._errored} flagged" if self._errored else ""
+        logger.info(f"stage {spec.id!r} [{index:02d}]: {len(todo)} records processed{flagged_note}")
+        self._notify_stage(spec, "on_stage_end", f"{len(todo)} records processed{flagged_note}")
         if final_shard is not None:
             await self._upload_shard(spec, stage_dir, final_shard)
+
+        # On resume, shards completed by an earlier process were not re-uploaded
+        # above (the worker loop only publishes shards it fills this run), so they
+        # are missing from this process's in-memory manifest. Re-list every shard
+        # so manifest.json reflects the stage's full output, not just this run's.
+        if not fresh:
+            await self._reconcile_shards(spec, stage_dir)
 
         # Mark the stage done and push a final status for it.
         if self.reporter.enabled:
@@ -594,12 +656,54 @@ class PipelineRunner:
                 "state": "succeeded",
                 "done": self._stage_total,
                 "total": self._stage_total,
+                "errored": self._errored,
             }
             self.reporter.update(
                 progress=Progress(self._stage_total, self._stage_total, "records"),
                 detail=self._build_detail(index),
                 force=True,
             )
+
+    def _select_input(self, spec: StageSpec, records: List[dict]) -> List[dict]:
+        """Keep only records passing every filter, then drop configured fields.
+
+        ``spec.filters`` runs first and selects which records run; all filters
+        must keep a record (AND), and each is evaluated against the record's
+        fields as-is — including any ``error*`` flags a previous run wrote, so a
+        rerun can select on ``error == True``. ``spec.drop_fields`` then strips
+        the named keys from the survivors — notably those ``error*`` flags, so a
+        previously-flagged record is reprocessed instead of hitting the
+        upstream-error pass-through in ``worker``. Returns the surviving records
+        (mutated in place).
+        """
+        if spec.filters:
+            kept = [r for r in records if all(f.keep(r) for f in spec.filters)]
+            logger.info(
+                f"stage {spec.id!r}: filters kept {len(kept)} of {len(records)} input record(s)"
+            )
+            records = kept
+        for record in records:
+            for name in spec.drop_fields:
+                record.pop(name, None)
+        return records
+
+    def _flag_record(self, record: dict, stage_id: str, exc: BaseException) -> dict:
+        """Return a copy of ``record`` marked errored instead of aborting the run."""
+        flagged = dict(record)
+        flagged["error"] = True
+        flagged["error_message"] = str(exc)
+        flagged["error_type"] = f"{type(exc).__module__}.{type(exc).__name__}"
+        flagged["error_stage"] = stage_id
+        self._errored += 1
+        # Surface the running count in the reported stage state so the dashboard
+        # sees it on the next push (every status push reads ``_stage_state``).
+        if stage_id in self._stage_state:
+            self._stage_state[stage_id]["errored"] = self._errored
+        logger.warning(
+            f"stage {stage_id!r}: record id={record.get(self.id_field)} flagged "
+            f"({flagged['error_type']}): {exc}"
+        )
+        return flagged
 
     async def _upload_shard(
         self,
@@ -631,6 +735,30 @@ class PipelineRunner:
                 ),
             )
 
+    async def _reconcile_shards(self, spec: StageSpec, stage_dir: Path) -> None:
+        """Re-list a resumed stage's shards in the manifest, uploading any S3 lacks.
+
+        Mirrors :meth:`_upload_shard`'s keying but routes through the reporter's
+        HEAD-gated :meth:`~DataCurator.reporting.reporter.JobReporter.ensure_artifact`,
+        so shards already on S3 (from the process that first wrote them) are
+        re-registered without re-sending their bytes. At successful stage end
+        every shard is closed and complete, so each is published ``complete=True``
+        — which also repairs a stale incomplete flag left by an earlier crash.
+        """
+        if not (self.reporter.enabled and self.reporter.upload_artifacts):
+            return
+        for shard in _shards(stage_dir):
+            dest = f"artifacts/{stage_dir.name}/{shard.name}"
+            label = f"{spec.id} {shard.name}"
+            async with self._upload_sem:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda s=shard, d=dest, l=label: self.reporter.ensure_artifact(
+                        s, label=l, complete=True, dest=d
+                    ),
+                )
+
     async def _pause_before_stage(self, spec: StageSpec) -> None:
         """Block for operator confirmation before running ``spec``.
 
@@ -654,7 +782,9 @@ class PipelineRunner:
 
         Maps every stage to its current state (``queued``/``running``/
         ``succeeded``/``failed``/``skipped``) so the dashboard can render the
-        stage list, alongside which stage is active.
+        stage list, alongside which stage is active. Each stage also carries the
+        number of records it flagged (``errored``), and ``total_errored`` sums
+        those across the pipeline.
         """
         stages = [
             StageInfo(
@@ -662,6 +792,7 @@ class PipelineRunner:
                 state=self._stage_state.get(spec.id, {}).get("state", "queued"),
                 done=self._stage_state.get(spec.id, {}).get("done"),
                 total=self._stage_state.get(spec.id, {}).get("total"),
+                errored=self._stage_state.get(spec.id, {}).get("errored"),
             ).to_dict()
             for spec in self.specs
         ]
@@ -670,6 +801,7 @@ class PipelineRunner:
             "stage_index": current_index,
             "total_stages": len(self.specs),
             "stages": stages,
+            "total_errored": self._total_errored(),
         }
 
     async def _heartbeat_loop(self, index: int) -> None:
@@ -702,11 +834,16 @@ class PipelineRunner:
             return
         self._notify_raw(f"[{self.name}] {spec.id}", message, priority=priority)
 
-    def _notify_pipeline_end(self, final_output: Path) -> None:
+    def _total_errored(self) -> int:
+        """Sum records flagged across every stage (disjoint, so a true total)."""
+        return sum(state.get("errored") or 0 for state in self._stage_state.values())
+
+    def _notify_pipeline_end(self, final_output: Path, total_errored: int = 0) -> None:
         """Send the pipeline-completion notification if enabled."""
         if self.notifications_cfg is None or not _get(self.notifications_cfg, "on_pipeline_end", False):
             return
-        self._notify_raw(f"[{self.name}] finished", f"final output: {final_output}")
+        flagged_note = f" ({total_errored} flagged)" if total_errored else ""
+        self._notify_raw(f"[{self.name}] finished", f"final output: {final_output}{flagged_note}")
 
     def _notify_raw(self, title: str, message: str, priority: Optional[str] = None) -> None:
         """Forward to the ntfy notifier; never let a failure abort the run."""
@@ -720,3 +857,14 @@ def _get(cfg: Any, key: str, default: Any = None) -> Any:
     if hasattr(cfg, "get"):
         return cfg.get(key, default)
     return default
+
+
+def _resolve_exception_types(paths: Any) -> Tuple[type, ...]:
+    """Import dotted exception paths into a tuple of exception classes."""
+    resolved: List[type] = []
+    for path in paths or []:
+        cls = hydra.utils.get_class(str(path))
+        if not (isinstance(cls, type) and issubclass(cls, BaseException)):
+            raise TypeError(f"flag_on_errors entry {path!r} is not an exception type")
+        resolved.append(cls)
+    return tuple(resolved)

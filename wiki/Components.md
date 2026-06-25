@@ -67,7 +67,21 @@ confirmation before each stage, so any manual step (swapping the deployed
 GPU model, inspecting intermediate output, reconfiguring hardware) can
 happen in between. Individual stages override this with a `pause_before`
 flag in their `pipeline.<id>` entry, so you can leave the global default
-off and pause before just one stage (or invert it). Notifications fire through
+off and pause before just one stage (or invert it). A record that fails with
+an exception type listed in `runner.flag_on_errors` is written with
+`error: true` (plus `error_message`/`error_type`/`error_stage`) and the run
+continues; later stages pass any `error: true` record through unchanged. The
+flagged count is reported per stage (`detail.stages[].errored`) and job-wide
+(`detail.total_errored`). Those flagged records are reprocessed by running a
+separate experiment that filters the original output down to the failures —
+see [Record filters](#record-filters).
+
+Each stage can also carry `filters` and `drop_fields` (runner metadata
+alongside `enabled`/`pause_before`, instantiated by `build_pipeline`). Before
+resume and `limit`, the runner keeps only the input records passing every
+filter, then strips `drop_fields` from the survivors — see
+[Record filters](#record-filters).
+Notifications fire through
 [`notify`](#notifications) at the points enabled in the notifications
 config.
 
@@ -104,8 +118,19 @@ sampling fields are sent
 top-level while vLLM-only controls (`top_k`, `min_p`, `repetition_penalty`)
 and the Qwen3 `enable_thinking` toggle are routed into `extra_body`,
 matching the model config. In-flight requests are capped by an internal
-semaphore sized to `model.concurrency`, and each call is retried with
-exponential backoff via tenacity.
+semaphore sized to `model.concurrency`, each request honours `model.timeout`
+(seconds), and each call is retried with exponential backoff via tenacity. A
+reply the SDK cannot parse into the schema (`parsed is None`, e.g. a refusal)
+raises `UnparseableOutputError` so it is resampled — and, if listed in
+[`runner.flag_on_errors`](Configuration#flagging-unprocessable-records),
+flags the record rather than aborting the run.
+
+Optional `validators` run **inside** the retry loop, just after a reply
+parses, so a guard rejecting an otherwise-valid parse triggers a fresh sample;
+see [Response validators](#response-validators). When a guard still fails after
+every retry and `keep_rejected_output` is set, the parsed output that failed is
+stashed under `rejected_output_field` so the generated text survives on the
+flagged record.
 
 ## Stage modifiers
 
@@ -160,6 +185,73 @@ reshape the context.
   sibling fields, so this is what lets a final stage assemble the rewrites an
   earlier review stage produced into candidate lists. A missing source raises
   unless `required=False`; `exists_ok` guards an existing `target`.
+
+## Record filters
+
+`DataCurator.pipeline.filters` selects **which input records a stage runs**.
+A `RecordFilter` implements `keep(record) -> bool`; filters are declared per
+stage as a `filters` list (each with a `_target_`, like modifiers) and are
+runner metadata, not part of the `Stage` — deciding which records run is the
+runner's job. `build_pipeline` instantiates them, and before resume/`limit`
+the runner keeps only records passing **every** filter, then strips the
+stage's `drop_fields` from the survivors.
+
+The in-tree filter is `ExpressionFilter`, which keeps a record when its
+`expression` is truthy over the record's fields. Expressions use familiar
+syntax — bare names are field lookups, `a.b`/`a[b]` index nested mappings, and
+`and`/`or`/`not`, comparisons (`== != < <= > >= in not in`) and the helpers
+`len`/`abs`/`str`/`int`/`float`/`bool` are allowed — but are evaluated by a
+small allow-listed walk over Python's `ast`, never `eval`: no builtins, no
+attribute access (so nothing can reach a Python object). It is parsed and
+validated when the pipeline is built, so a malformed or disallowed expression
+(`__import__(...)`, `open(...)`, a syntax error) fails fast. A field absent
+from the record reads as a falsy sentinel unequal to every value, so
+`error == True` simply drops records without an `error` key rather than
+raising; `true`/`false`/`null` alias `True`/`False`/`None`.
+
+The motivating use is **rerunning failed records as a separate experiment**:
+read the original run's output, keep `error == True`, and `drop_fields` the
+`error*` flags so the failures reprocess (otherwise the runner would pass them
+through). `config/experiment/queries_fiqa_no_thinking_rerun.yaml` is the worked
+example — see [Filtering and rerunning records](Configuration#filtering-and-rerunning-records).
+
+## Response validators
+
+`DataCurator.pipeline.validators` guards **what an LLM stage produced**. A
+`ResponseValidator` implements `validate(output, context) -> None` and raises
+`ResponseValidationError` when the parsed output is implausible; like filters
+and modifiers, validators are config-driven (declared under a stage's
+`validators` list, each with a `_target_`, and built by Hydra). The
+[LLM stage](#llm-stage) runs them inside its retry loop, so a guard rejecting
+an output that parsed cleanly still triggers a fresh sample; once retries are
+exhausted the error re-raises and — when `ResponseValidationError` is listed in
+[`runner.flag_on_errors`](Configuration#flagging-unprocessable-records) — the
+record is flagged rather than aborting the run. They catch a different class of
+failure than `response_model`: the JSON parses and satisfies the schema, but
+the *content* is wrong.
+
+Two ship in-tree, both reading their reference from the context (so the prompt's
+own inputs bound the output) and both skipping the check when that reference is
+missing or empty unless `required=True`:
+
+- `LengthRatioValidator` bounds `len(field) / len(reference)` for each output
+  field against `[min_ratio, max_ratio]` (either optional), in characters
+  (default) or whitespace `word`s. It catches a **truncated rewrite** that
+  breaks off mid-sentence yet still parses (`finish_reason: stop`, so the SDK
+  never raises `LengthFinishReasonError`): far shorter than the reference it
+  mirrors, it trips `min_ratio`.
+- `CharacterCountValidator` requires translation-invariant characters
+  (`characters`, counted with `str.count` — multi-char substrings like `\n\n`
+  work) to keep their reference count within `max_diff` (default 0, exact). It
+  catches a model that **escapes its own output** (prefixing words with `\`, JSON
+  still valid) or drops/swaps marks like `!`/`?`/brackets that pass through
+  EN→PL translation 1:1.
+
+Both `fields` and `reference` accept dotted paths into nested mappings. The
+worked example is the `fix_*` stage of `documents_fiqa_no_thinking.yaml`, which
+pairs a `LengthRatioValidator` against `target_text` (the Google-Translate
+draft) with a `CharacterCountValidator` against `source_text` (the English
+source) — see [Validator configs](Configuration#validator-configs).
 
 ## GoogleTranslator
 

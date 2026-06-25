@@ -27,6 +27,28 @@ the execution knobs read by `PipelineRunner`.
 | `runner.pause_between_stages`  | Block for operator confirmation before each stage (for manual steps in between). |
 | `runner.start_from`            | Resume the pipeline at this stage id, reading the prior stage's output. |
 | `runner.progress`              | Live stage + per-modifier progress bars; auto-disabled when not attached to a TTY. |
+| `runner.flag_on_errors`        | Exception types (dotted import paths) that flag the offending record instead of aborting the run; any exception not listed still fails the pipeline. Defaults to `openai.LengthFinishReasonError`, `openai.BadRequestError`, `openai.APITimeoutError`, `DataCurator.pipeline.stages.llm.UnparseableOutputError`, and `DataCurator.pipeline.validators.ResponseValidationError`. Set to `[]` to abort on every error. |
+
+### Flagging unprocessable records
+
+Some failures are inherent to a single record — the model truncates its
+output at `max_tokens` (`openai.LengthFinishReasonError`) or the prompt
+overflows the served context window (`openai.BadRequestError`, an HTTP 400
+from vLLM); others are transient but persistent, like a request that keeps
+timing out (`openai.APITimeoutError`), a reply that never parses into the
+response schema such as a refusal
+(`DataCurator.pipeline.stages.llm.UnparseableOutputError`), or output that
+parses but fails a stage [validator](#validator-configs)
+(`DataCurator.pipeline.validators.ResponseValidationError`). Rather than abort
+the whole run on one such record, `runner.flag_on_errors` lets the runner flag
+it and continue.
+When a stage raises a listed exception (after its `model.retries` attempts),
+the runner writes the record to the stage output with `error: true`,
+`error_message`, `error_type`, and `error_stage`, and later stages pass any
+record carrying `error: true` through unchanged rather than reprocessing it.
+The per-stage flagged count is logged and, when reporting is on, published in
+the dashboard `detail` as `stages[].errored` plus a job-wide `total_errored`;
+the count also appears in the pipeline-end notification.
 
 ## Experiment configs (`config/experiment/`)
 
@@ -69,6 +91,8 @@ template must supply a model — point it at a preset loaded under
 |------------------------|-------------------------------------------------------------------------------|
 | `enabled`              | When false, the stage is skipped and its input passes through unchanged.      |
 | `pause_before`         | Optional per-stage override of `runner.pause_between_stages` (unset = inherit). |
+| `filters`              | Optional list of input filters (each with `_target_`); only records kept by **every** filter are processed. See [Filtering and rerunning records](#filtering-and-rerunning-records). |
+| `drop_fields`          | Optional list of field names stripped from each input record (after filtering), e.g. clearing stale `error*` flags so a record reprocesses. |
 | `stage._target_`       | Import path of the `Stage` subclass to instantiate.                           |
 | `stage.model`          | Required model preset for this stage, e.g. `${_models.qwen35}` (no default).  |
 | `stage.response_model` | Dotted path to the Pydantic structured-output schema.                         |
@@ -77,6 +101,9 @@ template must supply a model — point it at a preset loaded under
 | `stage.prompts_dir`    | Directory holding the Jinja2 prompt files (`./prompts` by default).           |
 | `stage.prompt`         | Optional templated conversation: `{role, template}` entries naming prompt files. |
 | `stage.modifiers`      | List of modifier configs (each with `_target_`) attached to the stage.        |
+| `stage.validators`     | Optional list of output guards (each with `_target_`), run inside the retry loop. See [Validator configs](#validator-configs). |
+| `stage.keep_rejected_output` | When a validator rejects an output across all retries (flagging the record), keep the parsed output that failed under `rejected_output_field` instead of discarding it. Off by default. |
+| `stage.rejected_output_field` | Field a rejected output is stashed under when `keep_rejected_output` is on (default `rejected_output`). |
 
 ### Modifier configs
 
@@ -105,6 +132,84 @@ single field:
 | `DataCurator.pipeline.modifiers.constants.ConstantsModifier` | `values` (a `name -> literal` mapping injected into the context); `overwrite`/`exists_ok` (false = raise on an existing field, true = replace); `phase`. |
 | `DataCurator.pipeline.modifiers.candidates.CandidatesModifier` | `target` (field to write); `sources` (ordered field names or dotted paths to collect into a `[{id, text}, …]` list); `id_prefix` (ids become `{prefix}{n}` from 1, e.g. `Q` → `Q1`/`Q2`/`Q3`); `required` (false = drop missing sources); `exists_ok`; `phase`. |
 
+### Validator configs
+
+An [LLM stage](Components#llm-stage) can carry `validators` — output guards
+declared like `modifiers`, each with a `_target_` — that inspect the parsed
+output and raise to reject it. They run **inside** the stage's retry loop, so a
+rejection resamples; once retries are exhausted the error re-raises and, if
+`DataCurator.pipeline.validators.ResponseValidationError` is in
+[`runner.flag_on_errors`](#flagging-unprocessable-records), the record is
+flagged rather than aborting the run (see [Response
+validators](Components#response-validators)). Both in-tree validators read a
+`reference` field from the context and check one or more output `fields`
+(both accept dotted paths); a reference missing from the context skips the
+check unless `required=True`.
+
+| `_target_`                                                  | Key arguments                                                                                       |
+|------------------------------------------------------------|----------------------------------------------------------------------------------------------------|
+| `DataCurator.pipeline.validators.LengthRatioValidator`     | `fields`, `reference` (required); at least one of `min_ratio`/`max_ratio` bounding `len(field)/len(reference)`; `unit` (`char` (default) or `word`); `required`; `name`. Catches truncated rewrites that still parse. |
+| `DataCurator.pipeline.validators.CharacterCountValidator`  | `fields`, `reference`, `characters` (required, each counted with `str.count`); `max_diff` (default 0 = exact match); `required`; `name`. Catches stray escapes/punctuation drift vs the source. |
+
+### Filtering and rerunning records
+
+A stage can carry `filters` — a list declared like `modifiers`, each with a
+`_target_` — that select **which input records the stage processes**. The
+runner applies them to the stage's input before resume and `limit`, so a
+record dropped by a filter is never processed, and totals/progress/dashboard
+reflect the filtered set. Several filters combine with AND (a record must be
+kept by every one).
+
+The in-tree filter is `DataCurator.pipeline.filters.ExpressionFilter`, which
+keeps a record when its `expression` evaluates truthy against the record's
+fields. The expression is ordinary Python-flavoured syntax — bare names are
+field lookups, `a.b`/`a["b"]` index nested mappings, and `and`/`or`/`not`,
+comparisons (`== != < <= > >= in not in`) and the helpers
+`len`/`abs`/`str`/`int`/`float`/`bool` are supported (it is parsed and
+allow-list-validated at build time, never `eval`'d). A field absent from the
+record reads as falsy and unequal to everything, so `error == True` simply
+drops records without an `error` key; `true`/`false`/`null` are accepted as
+aliases for `True`/`False`/`None`.
+
+**Rerunning failed records.** Flagged records (`error: true`, see [Flagging
+unprocessable records](#flagging-unprocessable-records)) are skipped on resume,
+so reruns are done as a **separate experiment** that reads the original run's
+output and keeps only the failures — it never touches the original's shards.
+`config/experiment/queries_fiqa_no_thinking_rerun.yaml` is the worked example:
+it points `dataset.input` at the original's first-stage output
+(`dataset/fix_queries_fiqa_no_thinking/00_fix_queries/step-*.jsonl`), and the
+first stage adds
+
+```yaml
+drop_fields: [error, error_message, error_type, error_stage]
+filters:
+  - _target_: DataCurator.pipeline.filters.ExpressionFilter
+    expression: "error == True"
+```
+
+The filter keeps only the flagged records; `drop_fields` then clears the
+`error*` flags so they are reprocessed (otherwise the runner would pass them
+through as already-errored). Each record keeps its original `id`, so the fixed
+rows can be merged back by `id`. Run it with
+`uv run python run_pipeline.py experiment=queries_fiqa_no_thinking_rerun`
+(`documents_fiqa_no_thinking_rerun.yaml` is the documents twin). To rerun a
+failure from a *later* stage instead, point `dataset.input` at that stage's
+output and filter on e.g. `error == True and error_stage == "<stage_id>"`.
+
+Once the rerun finishes, `helpers/combine_experiments.py` merges the base run
+and one or more reruns by `id`, keeping the best record for each (a successful
+fix replaces the base run's failure, and a success is never regressed by a
+later error). Pass the matching stage directory from each run, base first:
+
+```
+uv run python helpers/combine_experiments.py \
+    --out data/queries_fiqa_combined.jsonl \
+    dataset/fix_queries_fiqa_no_thinking/01_pick_the_best_translation \
+    dataset/fix_queries_fiqa_no_thinking_rerun/01_pick_the_best_translation
+```
+
+Add `--drop-still-errored` to omit records that every rerun still failed.
+
 ## Environment variables
 
 These are read by config files via `${oc.env:VAR,null}`. Missing values
@@ -122,8 +227,11 @@ resolve to `null` rather than raising.
 
 ## Model config (`config/model/`)
 
-Each file under `config/model/` is a model preset. Two ship in-tree:
-`qwen35.yaml` (a vLLM-served Qwen3.6-35B endpoint) and `bielik.yaml`
+Each file under `config/model/` is a model preset. Several ship in-tree, all
+pointing at the same vLLM-served Qwen3.6-35B endpoint but tuned per pipeline
+stage — `qwen35_stage1.yaml`/`qwen35_stage1_no_thinking.yaml` (the review pass,
+the `_no_thinking` variant disabling Qwen3 thinking blocks) and
+`qwen35_stage2.yaml` (the lower-temperature pick pass) — plus `bielik.yaml`
 (a Bielik-11B endpoint). An experiment loads the presets it needs under
 `_models.<name>` and each stage selects one; add more files here to give
 stages more choices. The same keys apply to any OpenAI-compatible
@@ -142,6 +250,7 @@ it.
 | `max_tokens`         | Per-request output cap.                                  |
 | `concurrency`        | Max concurrent in-flight requests.                       |
 | `retries`            | Retry budget per request.                                |
+| `timeout`            | Per-request timeout in seconds (`null` = OpenAI default of 600s). |
 | `top_p`              | Nucleus sampling threshold.                              |
 | `top_k`              | Top-k sampling (vLLM, via `extra_body`).                 |
 | `min_p`              | Minimum-probability filter (vLLM, via `extra_body`).     |
@@ -152,10 +261,11 @@ it.
 
 ## Notification configs (`config/notifications/`)
 
-Two variants ship: `disabled.yaml` (the default — sets `enabled: false`
-and nothing else) and `ntfy.yaml`. The notifier reads its sub-config
-through `notify(notifications_cfg, ...)` and ignores everything when
-`enabled` is false.
+Three variants ship: `disabled.yaml` (sets `enabled: false` and nothing else),
+`ntfy.yaml`, and `ntfy_pub.yaml` (a ready-to-use public ntfy.sh topic, the
+default in `config.yaml`). The notifier reads its sub-config through
+`notify(notifications_cfg, ...)` and ignores everything when `enabled` is
+false.
 
 | Key                 | Meaning                                                                  |
 |---------------------|--------------------------------------------------------------------------|

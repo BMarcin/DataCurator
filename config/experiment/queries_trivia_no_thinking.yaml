@@ -24,14 +24,14 @@
 defaults:
   # Named model presets, referenced per stage as ${_models.<name>}. Add more
   # files under config/model/ and load them here to give stages more choices.
-  - /model/qwen35_stage1@_models.qwen35_stage1
+  - /model/qwen35_stage1_no_thinking@_models.qwen35_stage1_no_thinking
   - /model/qwen35_stage2@_models.qwen35_stage2
-  - /stages/llm@pipeline.fix_document
+  - /stages/llm@pipeline.fix_query
   - /stages/llm@pipeline.pick_the_best_translation
 #  - /stages/llm@pipeline.review_polish
   - _self_
 
-experiment_name: fix_documents_fiqa
+experiment_name: fix_query_trivia_no_thinking
 
 # Job identity for the live dashboard (used only when reporting is enabled).
 # The job_id is always `experiment_name`, so reruns share one dashboard entry;
@@ -41,21 +41,21 @@ job:
   links: []   # e.g. [{label: TensorBoard, url: https://...}]
 
 dataset:
-  input: data/embeddings_finetuning_documents_fiqa.jsonl
+  input: data/trivia_mined_queries.jsonl
   output_dir: dataset/${experiment_name}
   limit: null   # process only the first N input rows (null = all); handy for smoke runs
 
 order:
-  - fix_document
+  - fix_query
   - pick_the_best_translation
 
 pipeline:
   # First pass: review and improve each translation with Qwen.
-  fix_document:
+  fix_query:
     enabled: true
     stage:
-      name: fix_document
-      model: ${_models.qwen35_stage1}
+      name: fix_query
+      model: ${_models.qwen35_stage1_no_thinking}
       response_model: DataCurator.pipeline.schemas.TranslationReview
       output_field: review_answer
       prompt:
@@ -69,16 +69,16 @@ pipeline:
         - _target_: DataCurator.pipeline.validators.LengthRatioValidator
           fields: [improved_primary, improved_polished]
           reference: target_text
-          min_ratio: 0.7
-          max_ratio: 1.35
+          min_ratio: 0.6
+          max_ratio: 1.6
         # Translation-invariant characters must keep their source count: qwen
         # sometimes prefixes every word with "\" (the JSON still parses), and
         # marks like ! ? or brackets pass through EN→PL translation 1:1 — a
         # count drift vs the English source is an artifact, not a rewrite.
         - _target_: DataCurator.pipeline.validators.CharacterCountValidator
-          fields: [improved_primary, improved_polished, improved_alternative]
+          fields: [improved_primary, improved_polished]
           reference: source_text
-          characters: ['\', '!', '?', '|', '@']
+          characters: ['\', '!', '?', '(', ')', '[', ']', '{', '}', '|', '@']
       modifiers:
         - _target_: DataCurator.pipeline.modifiers.google_translate.GoogleTranslateModifier
           source: text
@@ -89,7 +89,7 @@ pipeline:
           source: text_gtranslate
           issues_field: language_tool_answer
           language: pl-PL
-          remote_server: http://languagetool.loc
+          remote_server: http://languagetool-server-pc1.rqlabs.space
         # Inject per-experiment constants the dataset doesn't carry. These are
         # literals, so they need ConstantsModifier — RenameModifier only moves
         # the value of an existing field and can't fabricate one.

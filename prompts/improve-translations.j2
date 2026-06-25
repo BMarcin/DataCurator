@@ -88,6 +88,14 @@ Use these categories (based on MQM). Assign each issue to exactly one:
   ({0}, {name}, %s, %d), Markdown syntax, URLs, email addresses, code
   spans. Treat these as inviolable — if the TARGET breaks them, that is
   an accuracy error of severity=serious.
+- Punctuation and symbols transfer one-to-one across the translation:
+  marks like exclamation and question marks, brackets and parentheses of
+  every kind, slashes, pipes, and at-signs belong to the SOURCE's
+  structure, not to {{ source_language }} as a language, so they should
+  appear in your translation just as they do in the SOURCE — neither added,
+  dropped, nor swapped (e.g. a closing period turned into a "!"). Write
+  every translation as plain {{ target_language }} text and never escape a
+  character with a backslash.
 - Do not "fix" issues that exist in the SOURCE. Your job is to translate
   it, not to correct it. If the SOURCE is ungrammatical or truncated, the
   TARGET should reflect that.
@@ -148,15 +156,8 @@ in the TARGET. The `context` field is a short window of surrounding TARGET
 text (≤40 chars on each side); the `error_text` field is just the flagged
 span.
 
-LanguageTool findings:
-{% for issue in language_tool_fixes %}
-- {{ issue.message }}
-  error_text: {{ issue.error_text | default("") }}
-  context: {{ issue.context | default("") }}
-  {%- if issue.suggestions %}
-  suggestions: {{ issue.suggestions | join(", ") }}
-  {%- endif %}
-{% endfor %}
+The findings themselves are listed in the INPUTS section below, under
+LANGUAGETOOL FINDINGS.
 {% endif %}
 
 # IMPROVED TRANSLATIONS
@@ -235,4 +236,15 @@ TARGET ({{ target_language }}) — this is the translation you are reviewing:
 {% if google_translation %}
 REFERENCE ({{ target_language }}) — Google Translate output, for your reference only:
 {{ google_translation }}
+{% endif %}
+{% if language_tool_fixes %}
+LANGUAGETOOL FINDINGS (on the TARGET):
+{% for issue in language_tool_fixes %}
+- {{ issue.message }}
+  error_text: {{ issue.error_text | default("") }}
+  context: {{ issue.context | default("") }}
+  {%- if issue.suggestions %}
+  suggestions: {{ issue.suggestions | join(", ") }}
+  {%- endif %}
+{% endfor %}
 {% endif %}

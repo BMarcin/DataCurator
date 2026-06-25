@@ -18,3 +18,16 @@ stage:
   input_field: messages
   prompt: null
   modifiers: []
+  # Guards over the parsed output, each a `_target_` ResponseValidator. They
+  # run inside the stage's retry loop, so a failed guard resamples; a record
+  # still failing after retries is flagged when its error type is listed in
+  # runner.flag_on_errors (DataCurator.pipeline.validators.ResponseValidationError).
+  validators: []
+
+  # When a validator (guard) above rejects an output across all retries and the
+  # record is flagged, keep the parsed output that failed the guard under
+  # `rejected_output_field` so the generated content survives on the flagged
+  # record (still marked error). Only applies to guard failures, not parse/other
+  # errors. Off by default.
+  keep_rejected_output: true
+  rejected_output_field: rejected_output

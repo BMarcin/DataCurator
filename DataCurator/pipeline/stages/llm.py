@@ -32,6 +32,18 @@ from pydantic import BaseModel
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
 
 from DataCurator.pipeline.stage import Stage, StageContext
+from DataCurator.pipeline.validators import ResponseValidationError, ResponseValidator
+
+
+class UnparseableOutputError(Exception):
+    """The model's reply could not be parsed into the response schema.
+
+    Raised when the structured-output parse yields no object — typically a
+    refusal or a reply that does not satisfy the schema. It is retried like any
+    other error (a fresh sample may parse), and is a natural entry for
+    ``runner.flag_on_errors`` so a record that still fails after retries is
+    flagged rather than aborting the whole run.
+    """
 
 
 def _as_container(value: Any) -> Any:
@@ -54,19 +66,33 @@ class LLMStage(Stage):
         output_field: str = "llm_output",
         name: Optional[str] = None,
         modifiers: Any = None,
+        validators: Any = None,
+        keep_rejected_output: bool = False,
+        rejected_output_field: str = "rejected_output",
     ) -> None:
         """Resolve the response schema and pre-build the request parameters."""
         super().__init__(name=name, modifiers=modifiers)
         self.input_field = input_field
         self.output_field = output_field
+        # When a stage-level validator rejects an output across all retries (so
+        # the record is flagged), optionally keep the parsed output that failed
+        # the guard under `rejected_output_field` instead of discarding it.
+        self.keep_rejected_output = keep_rejected_output
+        self.rejected_output_field = rejected_output_field
         self.response_model: Type[BaseModel] = self._resolve_response_model(response_model)
         self._prompt_templates = self._load_prompt(prompt, prompts_dir)
+        # Stage-level guards over the parsed output, run inside the retry loop so
+        # a failed guard triggers a fresh sample. Hydra instantiates the nested
+        # `_target_` entries, so the list arrives as built validators.
+        self.validators: List[ResponseValidator] = list(validators or [])
 
         cfg = _as_container(model) or {}
         self.api_base: Optional[str] = cfg.get("api_base")
         self.api_key: str = cfg.get("api_key") or "EMPTY"
         self.concurrency: int = int(cfg.get("concurrency", 8))
         self.retries: int = int(cfg.get("retries", 3))
+        timeout = cfg.get("timeout")
+        self.timeout: Optional[float] = float(timeout) if timeout is not None else None
         self._request_kwargs = self._build_request_kwargs(cfg)
 
         # Created lazily inside the event loop on first use.
@@ -143,7 +169,10 @@ class LLMStage(Stage):
     def _ensure_client(self) -> None:
         """Lazily build the async client and semaphore inside the running loop."""
         if self._client is None:
-            self._client = AsyncOpenAI(base_url=self.api_base, api_key=self.api_key)
+            kwargs: Dict[str, Any] = {"base_url": self.api_base, "api_key": self.api_key}
+            if self.timeout is not None:
+                kwargs["timeout"] = self.timeout
+            self._client = AsyncOpenAI(**kwargs)
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.concurrency)
 
@@ -174,13 +203,31 @@ class LLMStage(Stage):
         return _as_container(context[self.input_field])
 
     async def process(self, context: StageContext) -> None:
-        """Build the conversation, call the model, and store the parsed result."""
+        """Build the conversation, call the model, and store the parsed result.
+
+        When a validator (guard) rejects the output across all retries and
+        ``keep_rejected_output`` is set, stash the parsed output that failed the
+        guard under ``rejected_output_field`` before re-raising, so it survives
+        on the flagged record (carried out via ``Stage.run``'s context).
+        """
         messages = self._build_messages(context)
-        parsed = await self._complete(messages)
+        try:
+            parsed = await self._complete(messages, context)
+        except ResponseValidationError as exc:
+            output = getattr(exc, "output", None)
+            if self.keep_rejected_output and output is not None:
+                context.set(self.rejected_output_field, output)
+            raise
         context.set(self.output_field, parsed.model_dump())
 
-    async def _complete(self, messages: List[Dict[str, Any]]) -> BaseModel:
-        """Call the model with bounded concurrency and exponential-backoff retries."""
+    async def _complete(self, messages: List[Dict[str, Any]], context: StageContext) -> BaseModel:
+        """Call the model with bounded concurrency and exponential-backoff retries.
+
+        Stage-level validators run alongside the call within the retried block,
+        so a parse that satisfies the schema but fails a guard (e.g. a truncated
+        rewrite far shorter than its reference) is resampled like any other
+        failure; the validation error re-raises once retries are exhausted.
+        """
         self._ensure_client()
         assert self._semaphore is not None
         async with self._semaphore:
@@ -191,17 +238,38 @@ class LLMStage(Stage):
             ):
                 with attempt:
                     parsed = await self._call_llm(messages)
-                    if parsed is None:
-                        raise ValueError("model returned no parseable structured output")
+                    self._validate(parsed, context)
                     return parsed
         raise RuntimeError("unreachable: retry loop exited without returning")  # pragma: no cover
 
-    async def _call_llm(self, messages: List[Dict[str, Any]]) -> Optional[BaseModel]:
-        """Issue a single structured-output completion and return the parsed model."""
+    def _validate(self, parsed: BaseModel, context: StageContext) -> None:
+        """Run every attached validator over the parsed output; raise on failure."""
+        if not self.validators:
+            return
+        data = parsed.model_dump()
+        for validator in self.validators:
+            try:
+                validator.validate(data, context)
+            except ResponseValidationError as exc:
+                # Carry the parsed output that failed the guard so `process` can
+                # keep it on a flagged record when `keep_rejected_output` is set.
+                exc.output = data
+                raise
+
+    async def _call_llm(self, messages: List[Dict[str, Any]]) -> BaseModel:
+        """Issue a single structured-output completion and return the parsed model.
+
+        Raise :class:`UnparseableOutputError` when the parse yields no object,
+        surfacing the model's refusal reason when it supplied one.
+        """
         assert self._client is not None
         completion = await self._client.chat.completions.parse(
             messages=messages,
             response_format=self.response_model,
             **self._request_kwargs,
         )
-        return completion.choices[0].message.parsed
+        message = completion.choices[0].message
+        if message.parsed is None:
+            detail = f": {message.refusal}" if message.refusal else ""
+            raise UnparseableOutputError(f"model returned no parseable structured output{detail}")
+        return message.parsed
