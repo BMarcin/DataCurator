@@ -89,7 +89,7 @@ pipeline:
           source: text_gtranslate
           issues_field: language_tool_answer
           language: pl-PL
-          remote_server: http://languagetool-server-pc1.rqlabs.space
+          remote_server: <<SERVER>>
         # Inject per-experiment constants the dataset doesn't carry. These are
         # literals, so they need ConstantsModifier — RenameModifier only moves
         # the value of an existing field and can't fabricate one.
