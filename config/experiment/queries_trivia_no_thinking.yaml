@@ -78,7 +78,7 @@ pipeline:
         - _target_: DataCurator.pipeline.validators.CharacterCountValidator
           fields: [improved_primary, improved_polished]
           reference: source_text
-          characters: ['\', '!', '?', '(', ')', '[', ']', '{', '}', '|', '@']
+          characters: ['\', '!', '?',  '[', ']', '{', '}', '|', '@']
       modifiers:
         - _target_: DataCurator.pipeline.modifiers.google_translate.GoogleTranslateModifier
           source: text
