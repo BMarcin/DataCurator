@@ -11,7 +11,7 @@ uv sync
 
 # 1. Download dataset
 ```bash
-uv run python ./helpers/HF_mined_ds_to_jsonl.py --dataset jansowa/trivia-mined-negatives --source trivia --out-prefix trivia_mined
+uv run python ./helpers/HF_mined_ds_to_jsonl.py --dataset jansowa/trivia-mined-negatives --source trivia --out-prefix trivia_mined_pos
 ```
 
 # 2. Run vLLM + adjust parameters
