@@ -1,7 +1,5 @@
 # Qwen3.6-35B-A3B-FP8 served via vLLM on the local GPU box.
 name: Qwen/Qwen3.6-35B-A3B-FP8
-api_base: http://localhost:8000/v1
-api_key: EMPTY
 temperature: 0.5
 max_tokens: 85000
 concurrency: 32      # in-flight LLM calls; keep below the server's --max-num-seqs (48) and watch GPU KV cache usage

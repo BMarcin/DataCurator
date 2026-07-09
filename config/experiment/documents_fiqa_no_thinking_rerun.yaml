@@ -80,7 +80,7 @@ pipeline:
           source: text_gtranslate
           issues_field: language_tool_answer
           language: pl-PL
-          remote_server: http://languagetool.loc
+          remote_server: ${oc.select:_bindings.languagetool.remote_server,null}
         - _target_: DataCurator.pipeline.modifiers.constants.ConstantsModifier
           values:
             source_language: English

@@ -89,7 +89,7 @@ pipeline:
           source: text_gtranslate
           issues_field: language_tool_answer
           language: pl-PL
-          remote_server: <<SERVER>>
+          remote_server: ${oc.select:_bindings.languagetool.remote_server,null}
         # Inject per-experiment constants the dataset doesn't carry. These are
         # literals, so they need ConstantsModifier — RenameModifier only moves
         # the value of an existing field and can't fabricate one.

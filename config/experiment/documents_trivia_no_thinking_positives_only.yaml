@@ -43,7 +43,7 @@ job:
 dataset:
   # Flagged variant of the documents file: HF_mined_ds_to_jsonl_flagged.py adds
   # is_positive / is_negative / processed, which the fix_document filter selects on.
-  input: data/trivia_mined_pos_flagged_documents.jsonl
+  input: data/trivia_mined_pos_documents.jsonl
   output_dir: dataset/${experiment_name}
   limit: null   # process only the first N input rows (null = all); handy for smoke runs
 
@@ -97,7 +97,7 @@ pipeline:
           source: text_gtranslate
           issues_field: language_tool_answer
           language: pl-PL
-          remote_server: <<SERVER>>
+          remote_server: ${oc.select:_bindings.languagetool.remote_server,null}
         # Inject per-experiment constants the dataset doesn't carry. These are
         # literals, so they need ConstantsModifier — RenameModifier only moves
         # the value of an existing field and can't fabricate one.

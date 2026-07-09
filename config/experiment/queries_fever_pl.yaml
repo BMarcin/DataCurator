@@ -1,0 +1,41 @@
+# @package _global_
+#
+# Standalone translation experiment: render the SQuAD v2 *queries* into Polish
+# with Google Translate. A single `translate` stage translates each record's
+# English `text` into `text_gtranslate` (EN->PL) and persists the result; the
+# English `text` is kept alongside it. There is no LLM stage, so no model
+# presets are loaded.
+#
+# Run:
+#   uv run python run_pipeline.py experiment=queries_squadv2_pl
+#   # smoke test on the first few rows
+#   uv run python run_pipeline.py experiment=queries_squadv2_pl dataset.limit=5
+defaults:
+  - /stages/google_translate@pipeline.translate
+  - _self_
+
+experiment_name: translate_fever_queries_pl
+
+# Job identity for the live dashboard (used only when reporting is enabled).
+job:
+  type: data-pipeline
+  links: []
+
+dataset:
+  input: data/fever_ds_queries.jsonl
+  output_dir: dataset/${experiment_name}
+  limit: null   # process only the first N input rows (null = all); handy for smoke runs
+
+order:
+  - translate
+
+pipeline:
+  # Translate the English `text` to Polish, writing `text_gtranslate` (the
+  # English source is preserved). Set `target: text` to overwrite in place.
+  translate:
+    enabled: true
+    stage:
+      source: text
+      target: text_gtranslate
+      source_language_code: en
+      target_language_code: pl

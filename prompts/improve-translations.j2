@@ -18,7 +18,9 @@ You receive:
     often mediocre or wrong. You are NOT reviewing the REFERENCE and you
     must NOT treat it as a gold standard for translation quality.
 {%- endif %}
-  - optionally, LanguageTool findings on the TARGET.
+{% if language_tool_fixes %}
+  - LanguageTool findings on the TARGET.
+{% endif %}
 
 Your job is to:
 1. Evaluate whether the TARGET is a high-quality translation of the SOURCE.

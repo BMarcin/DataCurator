@@ -64,7 +64,7 @@ DEFAULT_ALLOWED_FIXES: Tuple[str, ...] = (
     "PYTANIE_CO",
     "CZASOWNIK_BY",
     "SKROTY_Z",
-    "PRZECINEK_"
+    "PRZECINEK_",
     "ROWNIE_JAK",
     "JEDNOSTKA_LICZBA",
     "MULTISPOJNIKI",
@@ -102,7 +102,7 @@ DEFAULT_ALLOWED_FIXES: Tuple[str, ...] = (
     "DOBRA_RENOMA",
     "PL_COMPOUNDS",
     "WRAZ_TYM",
-    "DODATKOWO_CO_WIECEJ"
+    "DODATKOWO_CO_WIECEJ",
     "WG",
     "POKI_CO",
     "UZNAC_JAKO",
@@ -173,13 +173,24 @@ class LanguageToolChecker:
         language: str = "pl-PL",
         remote_server: str | None = "http://languagetool.loc",
         allowed_fixes: List[str] | Tuple[str, ...] | None = None,
+        denied_fixes: List[str] | Tuple[str, ...] | None = None,
         retries: int = 5,
         max_passes: int = 3,
     ) -> None:
-        """Configure the LanguageTool client and the fix allow-list."""
+        """Configure the LanguageTool client and the fix allow/deny lists.
+
+        A rule is accepted only if its id matches the allow-list AND does not
+        match the deny-list; the deny-list wins ties. Both are matched by
+        prefix, so a broad allow prefix (e.g. ``"BRAK_"``) can be narrowed by a
+        more specific deny prefix (e.g. ``"BRAK_PRZECINKA_KTORY"``). Passing
+        ``allowed_fixes=[""]`` matches every rule (every id starts with the
+        empty string), turning the deny-list into the only filter — i.e.
+        "report everything except the denied rules".
+        """
         self.language = language
         self.remote_server = remote_server
         self.allowed_fixes = list(allowed_fixes) if allowed_fixes is not None else list(DEFAULT_ALLOWED_FIXES)
+        self.denied_fixes = list(denied_fixes) if denied_fixes is not None else []
         self.retries = retries
         self.max_passes = max_passes
 
@@ -202,13 +213,14 @@ class LanguageToolChecker:
                 with attempt:
                     checked_text = self.tool.check(text)
 
-                    fixes_to_do = [
-                        match for match in checked_text
-                        if any(match.rule_id.startswith(allowed_fix) for allowed_fix in self.allowed_fixes)
-                    ]
+                    fixes_to_do = [m for m in checked_text if self._is_selected(m.rule_id)]
 
                     fixed = language_tool_python.utils.correct(text, fixes_to_do)
-                    no_fixes = [m for m in checked_text if m.rule_id not in self.allowed_fixes]
+                    no_fixes = [
+                        m for m in checked_text
+                        if m.rule_id not in self.allowed_fixes
+                        and not any(m.rule_id.startswith(denied) for denied in self.denied_fixes)
+                    ]
 
                     final_fixes = "\n".join(str(issue) for issue in no_fixes)
                     return fixed, final_fixes
@@ -252,12 +264,13 @@ class LanguageToolChecker:
                 with attempt:
                     checked_text = self.tool.check(text)
 
-                    fixes_to_do = [
-                        match for match in checked_text
-                        if any(match.rule_id.startswith(allowed_fix) for allowed_fix in self.allowed_fixes)
-                    ]
+                    fixes_to_do = [m for m in checked_text if self._is_selected(m.rule_id)]
                     fixed = language_tool_python.utils.correct(text, fixes_to_do)
-                    no_fixes = [m for m in checked_text if m.rule_id not in self.allowed_fixes]
+                    no_fixes = [
+                        m for m in checked_text
+                        if m.rule_id not in self.allowed_fixes
+                        and not any(m.rule_id.startswith(denied) for denied in self.denied_fixes)
+                    ]
 
                     issues = [self._build_issue(text, m) for m in no_fixes]
                     return fixed, issues
@@ -277,6 +290,39 @@ class LanguageToolChecker:
             )
             return text, [{"message": f"Błąd przetwarzania [{exc_type}: {last_exc}]", "suggestions": []}]
 
+    def get_issues(self, text: str) -> List[Dict[str, Any]]:
+        """Detect (do not fix) issues in ``text``.
+
+        LanguageTool is used purely as a detector: run a single check and
+        return structured issues (see :meth:`_build_issue`) only for the
+        matches whose rule is in the allow-list. Unlike
+        :meth:`fix_and_get_issues`, no auto-fix is applied, the text is not
+        rewritten, and a bare ``List[Dict]`` is returned instead of a
+        ``(fixed_text, issues)`` tuple.
+        """
+        try:
+            for attempt in Retrying(stop=stop_after_attempt(self.retries)):
+                with attempt:
+                    checked_text = self.tool.check(text)
+
+                    selected = [m for m in checked_text if self._is_selected(m.rule_id)]
+                    return [self._build_issue(text, m) for m in selected]
+        except RetryError as e:
+            last_exc = e.last_attempt.exception() if e.last_attempt else e
+            if _is_connection_error(last_exc):
+                raise ConnectionError(
+                    f"cannot reach LanguageTool server at {self.remote_server!r}; "
+                    f"is it running?"
+                ) from last_exc
+            exc_type = type(last_exc).__name__
+            preview = text[:200].replace("\n", " ")
+            logger.opt(exception=last_exc).error(
+                f"LanguageTool failed after retries "
+                f"[{exc_type}: {last_exc}] "
+                f"(text_len={len(text)}, preview={preview!r})"
+            )
+            return [{"message": f"Błąd przetwarzania [{exc_type}: {last_exc}]", "suggestions": []}]
+
     def format_issues(self, text: str) -> Tuple[str, List[Dict[str, Any]]]:
         """Iterate :meth:`fix_and_get_issues` until the text stabilises.
 
@@ -293,6 +339,17 @@ class LanguageToolChecker:
             out = self.fix_and_get_issues(text)
             attempts += 1
         return out
+
+    def _is_selected(self, rule_id: str) -> bool:
+        """True if ``rule_id`` passes the allow-list and not the deny-list.
+
+        Both lists are prefix-matched; the deny-list takes precedence, so a
+        rule denied by a matching prefix is rejected even if the allow-list
+        also matches it.
+        """
+        if any(rule_id.startswith(denied) for denied in self.denied_fixes):
+            return False
+        return any(rule_id.startswith(allowed) for allowed in self.allowed_fixes)
 
     @staticmethod
     def _build_issue(text: str, match: Any) -> Dict[str, Any]:

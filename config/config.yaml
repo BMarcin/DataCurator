@@ -2,8 +2,9 @@
 # ordered flow of stages) with a notifications backend, and exposes the
 # runner-level knobs that govern persistence, resume and stage pausing.
 defaults:
-  - experiment: documents_trivia_no_thinking
-  - notifications: ntfy_pub
+  - experiment: queries_fever_pl
+  - bindings: local          # endpoints/secrets merged into _models/_bindings; the distributed controller composes bindings=none
+  - notifications: ntfy
   - reporting: disabled
   - _self_
 
@@ -11,7 +12,7 @@ runner:
   concurrency: 16            # max records processed in parallel per stage
   resume: true              # skip already-processed records when the stage config is unchanged
   debug: false               # extra per-record logging (every stage output is persisted regardless)
-  id_field: id              # record key used to match/skip work across reruns
+  id_field: ${oc.select:id_field,id}  # record key used to match/skip work across reruns; experiments may pin a top-level id_field
   shard_size: 1000          # records per output shard; each full shard is uploaded as an artifact (when reporting is on)
   pause_between_stages: false  # block for operator confirmation before each stage (for manual steps in between)
   start_from: null          # resume the pipeline at this stage id, reading the prior stage's output
