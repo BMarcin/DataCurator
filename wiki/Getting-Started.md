@@ -23,8 +23,9 @@ virtual environment. Do not invoke `pip` directly.
 
 ## Configure secrets
 
-Secrets are read from a `.env` file at the repo root (see `.env.example`
-for a template). Config files reference them via OmegaConf's `oc.env`
+Secrets are read from the process environment. Each component has its own
+env file, and `.env.pipeline` is the one for `run_pipeline.py` (see
+`.env.pipeline.example` for a template). Config files reference them via OmegaConf's `oc.env`
 resolver — the notifier reads ntfy credentials and, when reporting is
 enabled, the S3 connection:
 
@@ -52,7 +53,7 @@ modifiers enriching each record first, writing one JSONL file per stage
 under `dataset/example/`:
 
 ```bash
-uv run python run_pipeline.py experiment=example
+uv run --env-file .env.pipeline python run_pipeline.py experiment=example
 ```
 
 This experiment expects a reachable OpenAI-compatible endpoint (the
@@ -67,10 +68,10 @@ experiments, disable a stage, resume from one, or toggle notifications and
 reporting:
 
 ```bash
-uv run python run_pipeline.py pipeline.review.enabled=false
-uv run python run_pipeline.py runner.start_from=review
-uv run python run_pipeline.py notifications=ntfy notifications.topic=my-topic
-uv run python run_pipeline.py reporting=disabled
+uv run --env-file .env.pipeline python run_pipeline.py pipeline.review.enabled=false
+uv run --env-file .env.pipeline python run_pipeline.py runner.start_from=review
+uv run --env-file .env.pipeline python run_pipeline.py notifications=ntfy notifications.topic=my-topic
+uv run --env-file .env.pipeline python run_pipeline.py reporting=disabled
 ```
 
 Reruns skip records already present in a stage's output unless that

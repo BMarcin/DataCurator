@@ -16,8 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-#: Bumped only on a breaking change to the envelope shape. The dashboard
-#: branches on this. See ``job-panel/README.md`` §3 for the full contract.
+#: Bumped only on a breaking change to the envelope shape. Consumers branch on this.
 SCHEMA_VERSION = 1
 
 

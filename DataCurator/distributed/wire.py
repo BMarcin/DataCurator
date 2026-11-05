@@ -150,8 +150,9 @@ def nats_connect_options() -> Dict[str, Any]:
 def resolve_version() -> str:
     """The code version stamped onto jobs and advertised by workers.
 
-    ``DC_VERSION`` overrides (non-git deploys); otherwise the short git sha of
-    the checkout. One opaque token used everywhere — the sig chain, the
+    ``DC_VERSION`` overrides (non-git deploys, worker images); otherwise the
+    7-character git sha of the checkout. The length is fixed because plain
+    ``--short`` scales with repository size, and CI must build the same string. One opaque token used everywhere — the sig chain, the
     ``ver:`` capability tag, messages and ``_prov`` — so equality is the only
     operation ever performed on it.
     """
@@ -159,7 +160,7 @@ def resolve_version() -> str:
     if env:
         return env
     out = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
+        ["git", "rev-parse", "--short=7", "HEAD"],
         capture_output=True, text=True, check=True,
     )
     return out.stdout.strip()

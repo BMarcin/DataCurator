@@ -1,4 +1,4 @@
-.env
+.env.pipeline
 .env.*
 !.env.example
 !.env.*.example

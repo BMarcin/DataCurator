@@ -7,7 +7,8 @@
     run_controller.py gc     <job_id>
 
 Overrides after ``seed <experiment>`` are Hydra-style (``dataset.input=...``).
-Connection settings come from ``.env`` (NATS_URL, JOB_S3_*/DC_S3_*).
+Connection settings (NATS_URL, JOB_S3_*/DC_S3_*) come from the process environment:
+``uv run --env-file .env.controller python run_controller.py``.
 """
 from __future__ import annotations
 
@@ -15,12 +16,9 @@ import argparse
 import asyncio
 import sys
 
-from dotenv import load_dotenv
 from loguru import logger
 
-load_dotenv()
-
-from DataCurator.distributed import controller  # noqa: E402  (env first)
+from DataCurator.distributed import controller
 
 
 def main() -> None:

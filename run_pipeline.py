@@ -1,8 +1,9 @@
 """Hydra entrypoint for the DataCurator pipeline.
 
-Run the default experiment:
+Settings come from the process environment; no env file is loaded implicitly.
+Run the default experiment with the pipeline's env file:
 
-    uv run python run_pipeline.py
+    uv run --env-file .env.pipeline python run_pipeline.py
 
 Pick an experiment and enable notifications:
 
@@ -24,14 +25,11 @@ import logging
 import sys
 
 import hydra
-from dotenv import load_dotenv
 from loguru import logger
 from omegaconf import DictConfig
 
 from DataCurator.pipeline.runner import PipelineRunner, build_pipeline
 from DataCurator.reporting import build_reporter
-
-load_dotenv()
 
 # Third-party libraries that log via the stdlib ``logging`` module (httpx logs
 # every HTTP request at INFO). Quieted to WARNING unless ``runner.debug`` is on.

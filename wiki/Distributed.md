@@ -391,10 +391,10 @@ stall the heartbeat and trigger a false death.
 ### Graceful shutdown (drain)
 
 Planned shutdowns must not cost what crashes cost. Pressing **`s`** in the
-runner's terminal (or sending SIGTERM — the no-TTY path, e.g. systemd stop)
+runner's terminal (or sending SIGTERM — the no-TTY path, e.g. `docker stop`)
 drains the worker: it stops pulling new messages, finishes its in-flight
 chunks (upload → done event → ack), then exits. Nothing redelivers, nothing
-recomputes. Give the service manager a stop timeout of at least one chunk
+recomputes. Give the container a stop timeout of at least one chunk
 wall time; anything harder (SIGKILL, power loss) is simply the crash path the
 leases already handle. A rolling upgrade of the fleet is drain → deploy →
 restart, box by box.
@@ -488,6 +488,25 @@ reprocesses only what is missing or flagged; nothing completed is lost. Bump
 only when a fix changes what *already-successful* outputs should contain (a
 silent-wrong-output bug) — then the sig chain flips and the full recompute is
 the point, not a cost to engineer around.
+
+### Worker image
+
+The `Build images` workflow runs when a GitHub release is published and pushes
+the worker and monitor images to GitHub Container Registry, tagged with the release
+tag and, unless it is a pre-release, `latest`. The worker image has no `.git`, so the
+build bakes the release tag in as `DC_VERSION`. Set the same value in the
+controller's env file, otherwise it stamps jobs with the git SHA and no released
+worker matches them. Connection settings and bindings are provided at runtime. A
+`DC_VERSION` in the worker's env file overrides the built-in value, so a crash-fix
+release can run under the version it fixes.
+
+### Monitor image
+
+The monitor image needs no `DC_VERSION`, because the monitor reads each job's
+version from its record and never calls `resolve_version`. SIGTERM stops it
+straight away, and its state rebuilds from the done stream, the job records and S3
+on the next start. `DC_STALL_CRON` may be quoted, because `docker run --env-file`
+keeps the quotes that `uv run --env-file` needs around a value with spaces.
 
 ## Capability routing
 
@@ -761,56 +780,27 @@ agents on workers; it re-exports what already flows through it:
 Grafana over Prometheus is the operator view — the standard dashboards: a
 per-job **chunk burndown** per stage, flagged records by `error_type`, queue
 depth / redeliveries per consumer, and a **fleet table** (worker, version,
-in-flight, GPU/RAM). The job panel stays the shareable job view, fed straight
-from the monitor (below).
+in-flight, GPU/RAM).
 
-### Job panel
+### Monitor HTTP API
 
-The job panel (JobsDashboard) stays the shareable job view, but its S3
-`status.json` contract does **not** carry over. That contract was the
-workaround for having no aggregator — N producers on M machines could only
-meet in a neutral store. Here the monitor *is* the aggregator, so the panel
-consumes it directly, exactly as Prometheus already does: a **read-only HTTP
-API on the monitor** (which already serves HTTP for `/metrics`), re-exporting
-what flows through it. No job metadata re-enters S3, and the panel gains
-fidelity the envelope never had — the live ragged chunk burndown, per-worker
-in-flight, redeliveries.
+The monitor serves a read-only HTTP API next to `/metrics`, re-exporting what
+already flows through it, so no job metadata re-enters S3.
 
 - `GET /api/jobs` — summaries. `GET /api/jobs/{id}` — the full view:
   per-stage chunk progress, fleet table, flagged records by `error_type`,
   dead-lettered chunks, queue depth.
-- `GET /api/jobs/{id}/artifacts` — the **live-sig chunk keys**, straight from
-  the plan. This dissolves the old artifact machinery — no `manifest.json`,
-  no `artifacts_rev`, no result copying: the monitor never lists a dead-sig
-  prefix, a re-seeded job's artifact view flips atomically to the new plan,
-  and path safety strengthens from prefix-sanitizing to an **allowlist** (the
-  dashboard downloads only keys the monitor listed).
+- `GET /api/jobs/{id}/artifacts` — the final stage's **live-sig chunk keys**,
+  straight from the plan. The monitor never lists a dead-sig prefix, and a
+  re-seeded job's artifact view flips atomically to the new plan.
 - `GET /api/stream` — SSE deltas (chunk done, fleet and state changes).
-- Static bearer token; the dashboard is the only client.
-
-The dashboard stays the public face on the VPS and keeps its body — in-memory
-store, SSE fan-out to browsers, deep links, proxied downloads (read-only
-credentials on the data bucket), record viewer. Only its *intake* changes:
-the S3 poller becomes one source beside the monitor client, so standalone
-`run_pipeline.py` jobs (and future monitor-less producers, e.g. training)
-still share the page; a `distributed-pipeline` renderer joins the type
-registry. The record viewer reads chunk files as-is (immutable per sig; an
-equivalent recompute preserves the record count), and `_prov` gives it
-per-record provenance for free.
-
-The UI is deliberately **not** folded into the monitor: the panel is
-public-facing, hostile-input-hardened, and streams multi-GB downloads — none
-of which belongs on the process whose event loop drives stage handoff.
-Accepted trades: the VPS must reach the monitor (LAN today, or the same
-public-domain treatment as LanguageTool); the monitor gains a read-only
-inbound surface; a dead monitor flips its jobs stale on the panel — truthful,
-since handoff is stalled anyway. When the monitor *is* up, staleness becomes
-semantic ("queue depth > 0, zero capable pullers"), not a missed heartbeat.
+- Static bearer token (`DC_PANEL_TOKEN`). Without one the API stays closed;
+  `/metrics` stays unauthenticated for Prometheus.
 
 ### Canary
 
 Before seeding a full job, seed a limited one (a few chunks) and inspect its
-output in the job panel's record viewer. Cheap insurance against the one bug
+output with `helpers/browse_jsonl_s3.py`. Cheap insurance against the one bug
 class nothing above catches automatically: code that runs fine and writes
 wrong output.
 
@@ -852,7 +842,7 @@ store, a new daemon, a new message type) to get unstuck.
   `asyncio.to_thread`. `except Exception` only, never bare `except` — the
   lease-sensor abort is a task cancellation and must propagate.
 - New dependencies: `nats-py`, `prometheus-client`. Nothing else until the
-  panel-API phase (which may add `starlette`/`uvicorn`).
+  monitor API phase (which may add `starlette`/`uvicorn`).
 
 ### Module layout
 
@@ -924,8 +914,8 @@ a `{model name → {api_base, api_key}}` map, the LanguageTool URL, S3
 credentials. Its capabilities are **derived**, not hand-listed: `model:<name>`
 per entry of that map, plus `cpu`, plus `ver:<version>`.
 
-`version` is `git rev-parse --short HEAD` at process start (`DC_VERSION` env
-overrides it on non-git deploys). Record ids: the controller keeps dataset
+`version` is the `DC_VERSION` env var when set, which is the release tag on the
+worker image, otherwise `git rev-parse --short=7 HEAD` at process start. Record ids: the controller keeps dataset
 order, uses the experiment's `id_field` when present, otherwise assigns
 `<row_index:08d>` — either way ids are frozen into `input/` before any sig is
 computed.
@@ -982,7 +972,7 @@ controller/monitor entries.
    never pulls a model stage) and version fencing (a mismatched worker pulls
    nothing).
 9. **Batched LLM requests** (per the Batched section) — only after 1–8 hold.
-10. **Job-panel API** on the monitor (per the Job panel section).
+10. **HTTP API** on the monitor (per the Monitor HTTP API section).
 
 ### Acceptance checklist
 
@@ -1007,18 +997,13 @@ controller/monitor entries.
 
 ## Deferred / open
 
-- **Job-history home.** `status.json` persisted finished jobs for free; with
-  the monitor as the panel's source, terminal state needs a durable home so
-  history survives a monitor restart. Cleanest candidate: write the terminal
-  state into the durable job record (the KV `jobs` bucket) — the monitor
-  rebuilds history from records and the panel stays a pure cache.
 - **S3 security.** Data may be publicly readable, but access is still gated by
   credentials: least-privilege, per-bucket Garage keys (read input, read/write
-  `jobs/<id>/`), TLS to the endpoint, secrets via `.env` — never in a message or
+  `jobs/<id>/`), TLS to the endpoint, secrets via each role's env file — never in a message or
   committed.
 - **NATS security.** The internet-facing server runs with `authorization` on:
   one user/password per node, listed in the gitignored
   `distributed-infra/nats/nats-users.conf` (SIGHUP reloads). Nodes authenticate via
-  `NATS_USER`/`NATS_PASSWORD` in their `.env` (`NATS_TOKEN`/`NATS_CREDS` also
+  `NATS_USER`/`NATS_PASSWORD` in their role's env file (`NATS_TOKEN`/`NATS_CREDS` also
   supported). TLS terminates at the proxy in front of `:4222`; the
   unauthenticated `:8222` monitoring port is loopback-only.

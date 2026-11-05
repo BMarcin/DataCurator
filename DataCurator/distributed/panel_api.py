@@ -1,12 +1,11 @@
-"""The monitor's read-only HTTP surface (wiki/Distributed.md "Job panel").
+"""The monitor's read-only HTTP surface (wiki/Distributed.md "Monitor HTTP API").
 
-The job panel consumes the monitor directly, exactly as Prometheus already
-does — no job metadata re-enters S3, no manifest, no artifacts_rev. The
+Clients read the monitor directly, exactly as Prometheus already does — no
+job metadata re-enters S3, no manifest, no artifacts_rev. The
 artifact view is an allowlist: only live-sig keys the plan addresses are ever
 listed, so a re-seeded job's artifacts flip atomically to the new plan.
 
-Auth: a static bearer token (``DC_PANEL_TOKEN``); the dashboard is the only
-client. ``/metrics`` stays unauthenticated for Prometheus.
+Auth: a static bearer token (``DC_PANEL_TOKEN``). ``/metrics`` stays unauthenticated for Prometheus.
 """
 from __future__ import annotations
 
@@ -84,8 +83,8 @@ def build_app(monitor) -> Starlette:
         return JSONResponse(view)
 
     async def artifacts(request):
-        """Live-sig result keys, straight from the plan — the allowlist the
-        dashboard downloads from."""
+        """Live-sig result keys, straight from the plan — the allowlist of
+        downloadable results."""
         state = monitor.jobs.get(request.path_params["job_id"])
         if state is None:
             return JSONResponse({"error": "unknown job"}, status_code=404)

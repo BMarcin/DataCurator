@@ -95,7 +95,7 @@ run it falls back to plain loguru output automatically.
 The Hydra entrypoint is `run_pipeline.py` at the repo root:
 
 ```bash
-uv run python run_pipeline.py
+uv run --env-file .env.pipeline python run_pipeline.py
 ```
 
 ## LLM stage
@@ -471,8 +471,7 @@ by a small semaphore) under `artifacts/<NN>_<stage>/step-NNNN.jsonl`; the
 upload call is unconditional and simply no-ops when reporting (or
 `upload_artifacts`) is off. A shard left behind by a *failed* stage is
 uploaded `complete: false`. Reporting is configured under the `reporting` key — see
-[Configuration](Configuration#reporting-configs-configreporting) — and the
-dashboard that consumes the contract is specified in `job-panel/README.md`.
+[Configuration](Configuration#reporting-configs-configreporting).
 
 ## JSONL browser
 

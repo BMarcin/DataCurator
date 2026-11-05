@@ -5,7 +5,8 @@ and are grouped by concern — `config/config.yaml` is the entrypoint,
 `config/experiment/` declares the pipeline flow, `config/stages/` holds
 reusable stage templates, `config/model/` defines LLM endpoints, and
 `config/notifications/` configures the notifier. Secrets are kept out of
-the config files and read from `.env` via OmegaConf's `oc.env` resolver.
+the config files and read from the process environment (`.env.pipeline`
+for standalone runs) via OmegaConf's `oc.env` resolver.
 This page lists the keys that exist today; refer to
 [Components](Components) for how each one is consumed.
 
@@ -231,7 +232,7 @@ The filter keeps only the flagged records; `drop_fields` then clears the
 `error*` flags so they are reprocessed (otherwise the runner would pass them
 through as already-errored). Each record keeps its original `id`, so the fixed
 rows can be merged back by `id`. Run it with
-`uv run python run_pipeline.py experiment=queries_fiqa_no_thinking_rerun`
+`uv run --env-file .env.pipeline python run_pipeline.py experiment=queries_fiqa_no_thinking_rerun`
 (`documents_fiqa_no_thinking_rerun.yaml` is the documents twin). To rerun a
 failure from a *later* stage instead, point `dataset.input` at that stage's
 output and filter on e.g. `error == True and error_stage == "<stage_id>"`.
@@ -346,10 +347,9 @@ and `s3.yaml`, which publishes live job status, host metrics and stage
 artifacts to an S3-compatible bucket for an external dashboard. The runner
 builds a reporter with `build_reporter(cfg.reporting, ...)`; when reporting
 is off, misconfigured, or missing a bucket it falls back to a no-op
-reporter and the job runs unchanged. Connection secrets come from `.env`
+reporter and the job runs unchanged. Connection secrets come from `.env.pipeline`
 via `${oc.env:...}` (see [Environment variables](#environment-variables)).
-Enable with `uv run python run_pipeline.py reporting=s3`. The consumer-side
-contract for these objects is documented in `job-panel/README.md`.
+Enable with `uv run --env-file .env.pipeline python run_pipeline.py reporting=s3`.
 
 | Key                     | Meaning                                                                  |
 |-------------------------|--------------------------------------------------------------------------|

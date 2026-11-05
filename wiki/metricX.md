@@ -97,7 +97,7 @@ edit (see [Configuration](Configuration)). The Polish string lands at
 rows the pipeline processed:
 
 ```bash
-uv run python run_pipeline.py experiment=translate_queries_trivia_simple
+uv run --env-file .env.pipeline python run_pipeline.py experiment=translate_queries_trivia_simple
 ```
 
 Output shards land under

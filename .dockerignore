@@ -1,4 +1,4 @@
-# Keep the monitor image's build context lean (context = repo root).
+# Keep the image build contexts lean and free of secrets (context = repo root).
 .venv
 .git
 data/
@@ -8,11 +8,20 @@ outputs/
 logs/
 wiki/
 grafana/
-job-panel/
 languagetool/
 litellm-proxy/
+metricx/
+inference/
+assets/
+config/
+helpers/
+scripts/
+tests/
+.claude/
+.idea/
+.run/
 **/__pycache__
-.env
+**/.env*
 bindings.yaml
 distributed-infra/nats/nats-users.conf
 test.json

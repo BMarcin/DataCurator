@@ -13,8 +13,8 @@ gets a :class:`NullReporter` whose methods are no-ops, so call sites stay
 unconditional.
 
 This module is deliberately job-agnostic — it knows the *envelope*, not what
-``detail`` means. See ``job-panel/README.md`` for the full contract and
-``DataCurator.reporting.schema`` for the envelope shape.
+``detail`` means. See ``DataCurator.reporting.schema`` for the envelope
+shape.
 """
 from __future__ import annotations
 

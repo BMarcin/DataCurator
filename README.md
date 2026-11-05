@@ -85,10 +85,11 @@ means "missing for this exact plan", and a late worker from an older plan can on
 
 ## Quick start
 
-A deployment has a coordination box, one or more workers and an S3-compatible bucket. Clone the repository and run
-`uv sync` on each box. Each role has its own template:
+A deployment has a coordination box, one or more workers and an S3-compatible bucket. Clone the repository on each
+box, and run `uv sync` wherever the controller or monitor runs. Each role has its own template:
 [`.env.monitor.example`](.env.monitor.example), [`.env.worker.example`](.env.worker.example) and
-[`.env.controller.example`](.env.controller.example).
+[`.env.controller.example`](.env.controller.example). No entry point loads an env file by itself, so each command names
+its role's file.
 
 ### Coordination box
 
@@ -97,32 +98,46 @@ present but commented out, so **uncomment `nats` first** unless NATS already run
 authentication, with one user per node:
 
 ```bash
-cp .env.monitor.example .env
+cp .env.monitor.example .env.monitor
 cp distributed-infra/nats/nats-users.example.conf distributed-infra/nats/nats-users.conf
-docker compose -f distributed-infra/docker-compose.yml up -d
-uv run --env-file .env python run_monitor.py
+docker compose -f distributed-infra/docker-compose.yml --env-file .env.monitor up -d
+docker run -d --name dc-monitor --restart unless-stopped --network host \
+    --env-file .env.monitor \
+    ghcr.io/bmarcin/datacurator-monitor:1.0.0
 ```
 
-Edit both copied files before starting. Prometheus scrapes the monitor at `host.docker.internal:8022`, so set
-`DC_MONITOR_PORT=8022` and make sure the host firewall lets the Docker network reach that port. Set `GF_ADMIN_USER` and
+Edit both copied files before starting. CI publishes the monitor image with each GitHub release. Its job handling does not
+depend on `DC_VERSION`, because each job carries its own version. Prometheus scrapes the monitor at
+`host.docker.internal:8022`, so set `DC_MONITOR_PORT=8022` and make sure the host firewall lets the Docker network reach
+that port. Set `GF_ADMIN_USER` and
 `GF_ADMIN_PASSWORD` too, because Grafana otherwise uses `admin` / `admin` and allows anonymous viewers.
 
 ### Workers
 
-Each worker runs bare on its box, from the same git commit as the job. The model server is started separately, for
-example with [`scripts/run-qwen38.sh`](scripts/run-qwen38.sh). `bindings.yaml` maps model names to endpoints, and each
-entry becomes a `model:<name>` capability. Without the file, the worker is CPU-only.
+Workers run from the `datacurator-worker` image. CI builds it when a GitHub release is published and pushes it to GitHub
+Container Registry, tagged with the release tag and, unless it is a pre-release, `latest`. The release tag is also the image's
+`DC_VERSION`. A worker only pulls jobs seeded at its own version, so set `DC_VERSION` in `.env.controller` to the same value;
+without it the controller uses the git SHA and workers pull nothing. The model server is started separately, for example with
+[`scripts/run-qwen38.sh`](scripts/run-qwen38.sh). `bindings.yaml` maps model names to endpoints, and each entry becomes a
+`model:<name>` capability. Without the file, the worker is CPU-only.
 
 ```bash
-cp .env.worker.example .env
+cp .env.worker.example .env.worker
 cp bindings.example.yaml bindings.yaml
-uv run --env-file .env python run_distributed.py
+docker run -d --name dc-worker --restart on-failure --network host --gpus all --stop-timeout 1800 \
+    --env-file .env.worker \
+    -v "$PWD/bindings.yaml:/app/bindings.yaml:ro" \
+    -v dc-worker-logs:/app/logs \
+    ghcr.io/bmarcin/datacurator-worker:1.0.0
 ```
 
+`--network host` lets `localhost` in `bindings.yaml` reach a model server on the same box, `--gpus all` is only needed for
+GPU metrics, and `--stop-timeout` gives in-flight chunks time to finish. Edit both copied files first. `docker run` reads
+`--env-file` values literally, so don't use inline comments or quotes there. A `DC_VERSION` in `.env.worker` overrides the
+image's version, which lets a crash-fix release keep working under the version it fixes. If the package is private, run `docker login ghcr.io` first.
+
 [`bindings.example.yaml`](bindings.example.yaml) also sets per-box `concurrency` and `timeout` for each model, the Google
-Translate endpoint and limits, and the LanguageTool and MetricX addresses. To run under systemd, use
-[`scripts/dc-worker.service`](scripts/dc-worker.service). It loads `.env` through `EnvironmentFile`, which treats inline
-comments as part of the value, so remove the `# in-flight records` comment from `DC_WORKER_CONCURRENCY` first.
+Translate endpoint and limits, and the LanguageTool and MetricX addresses.
 
 ### Seed a job
 
@@ -131,10 +146,11 @@ are not recomputed. The experiment's prompts must be in `assets/prompts/<experim
 kept out of git.
 
 ```bash
+cp .env.controller.example .env.controller
 uv run python helpers/HF_mined_ds_to_jsonl_segments.py --out-prefix squadv2
-uv run python run_controller.py seed gate_squadv2_qwen38_batching --max-chunks 5
+uv run --env-file .env.controller python run_controller.py seed gate_squadv2_qwen38_batching --max-chunks 5
 uv run python helpers/browse_jsonl_s3.py --list
-uv run python run_controller.py seed gate_squadv2_qwen38_batching
+uv run --env-file .env.controller python run_controller.py seed gate_squadv2_qwen38_batching
 ```
 
 Chunks default to 20 records; change this with `--chunk-size`. Keep them small for expensive stages, because a worker
@@ -152,8 +168,7 @@ number of records in flight per worker.
 | `run_controller.py cancel <job_id>` | Purges the queue and marks the job cancelled. In-flight chunks finish, and a monitor restart won't revive the job. |
 | `run_controller.py gc <job_id>` | Deletes output prefixes from older plans. |
 
-Run these as `uv run python run_controller.py`. The controller loads `.env` by itself; the monitor and worker do not,
-hence `--env-file` above.
+Run these as `uv run --env-file .env.controller python run_controller.py`.
 
 **Change a running job** by editing the experiment and running `seed` again. Changed stages and everything after them
 get new signatures, unchanged earlier stages keep their outputs, and you don't need to wait for in-flight work. The
@@ -163,7 +178,7 @@ get new signatures, unchanged earlier stages keep their outputs, and you don't n
 flow through first, so a joint run can finish its queries while documents are still drafting. The order is approximate,
 since parallel workers and redeliveries shuffle it a little.
 
-**Stop a worker gracefully** with `s` then Enter in its terminal, or with `SIGTERM`. It stops pulling, finishes its
+**Stop a worker gracefully** with `docker stop dc-worker`, which sends `SIGTERM`. It stops pulling, finishes its
 in-flight chunks and exits, so nothing is redelivered. For a rolling upgrade, drain, deploy and restart box by box.
 
 **Retry failed records** by turning them into a new experiment's input. A record counts as failed if the last stage holds
@@ -171,7 +186,7 @@ it with `error: true` or it never got there. Credentials come from `.env.browse`
 
 ```bash
 uv run python helpers/pull_failed_s3.py gate_squadv2_qwen38_batching --out data/squadv2_segments_flagged.jsonl
-uv run python run_controller.py seed gate_squadv2_qwen38_batching_rerun
+uv run --env-file .env.controller python run_controller.py seed gate_squadv2_qwen38_batching_rerun
 ```
 
 ## Failure handling
@@ -310,12 +325,12 @@ written into your data as validator failures.
 
 `run_pipeline.py` runs the same stages in one process with local JSONL output, which suits smoke tests and small datasets.
 It resumes by skipping records already processed under an unchanged stage config. It reads the Google Translate
-endpoint from `GOOGLE_TRANSLATE_URL` and `GOOGLE_TRANSLATE_CLIENT` in `.env`.
+endpoint from `GOOGLE_TRANSLATE_URL` and `GOOGLE_TRANSLATE_CLIENT` in `.env.pipeline` (template: [`.env.pipeline.example`](.env.pipeline.example)).
 
 ```bash
-uv run python run_pipeline.py experiment=documents_trivia_no_thinking dataset.limit=200
-uv run python run_pipeline.py experiment=documents_trivia_no_thinking runner.start_from=pick_the_best_translation
-uv run python run_pipeline.py experiment=documents_trivia_no_thinking pipeline.pick_the_best_translation.enabled=false
+uv run --env-file .env.pipeline python run_pipeline.py experiment=documents_trivia_no_thinking dataset.limit=200
+uv run --env-file .env.pipeline python run_pipeline.py experiment=documents_trivia_no_thinking runner.start_from=pick_the_best_translation
+uv run --env-file .env.pipeline python run_pipeline.py experiment=documents_trivia_no_thinking pipeline.pick_the_best_translation.enabled=false
 ```
 
 These need the experiment's input file and prompt assets, plus a reachable model server.
@@ -332,7 +347,7 @@ Batching, capability routing and `on_filtered` exist only on the fleet. The stan
 | [Distributed pipeline](wiki/Distributed.md) | The full design: wire format, invariants, leases, routing, batching and observability. |
 | [Components](wiki/Components.md) | Stages, modifiers, filters, validators, prompts and individual experiments. |
 | [MetricX evaluation](wiki/metricX.md) · [Margin similarity](wiki/MarginBasedSimilarity.md) | Offline quality scoring; margin-based pair filtering (in Polish). |
-| [Infrastructure](distributed-infra/README.md) · [Job panel](job-panel/README.md) | The compose stacks, including a local NATS and MinIO harness; the specification for a job dashboard. |
+| [Infrastructure](distributed-infra/README.md) | The compose stacks, including a local NATS and MinIO harness. |
 
 To run the tests: `uv run pytest`.
 
@@ -349,7 +364,6 @@ To run the tests: `uv run pytest`.
 - **Thresholds need calibrating.** Some shipped values, such as the MetricX gate override, are placeholders. Calibrate
   them with `scripts/probe_*.py` before a real run.
 - **No provisioning.** Starting machines, deploying code and starting model servers are up to the operator.
-- **No dashboard yet.** The repository specifies a job panel and ships the API behind it, but not the panel itself.
 
 ## License
 

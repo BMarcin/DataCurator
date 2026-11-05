@@ -3,7 +3,7 @@
 Producers (the pipeline runner today, a training script tomorrow) push a
 job-agnostic status envelope, system metrics and artifacts to S3 via
 :class:`~DataCurator.reporting.reporter.JobReporter`; an external dashboard
-reads them. See ``job-panel/README.md`` for the consumer-side contract.
+may read them.
 """
 from __future__ import annotations
 

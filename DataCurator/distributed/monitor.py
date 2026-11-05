@@ -114,6 +114,15 @@ def alert_priorities_from_env() -> Dict[str, str]:
     return priorities
 
 
+def stall_cron_from_env() -> Optional[str]:
+    """``DC_STALL_CRON`` without surrounding quotes.
+
+    A cron expression has spaces, so ``uv run --env-file`` needs it quoted, while
+    ``docker run --env-file`` passes those quotes through as part of the value.
+    """
+    return (os.environ.get("DC_STALL_CRON") or "").strip().strip("\"'") or None
+
+
 @dataclass
 class JobState:
     """In-memory view of one job — rebuildable from the stream + S3."""
@@ -202,7 +211,12 @@ class Monitor:
             from .panel_api import build_app
 
             config = uvicorn.Config(
-                build_app(self), host="0.0.0.0", port=self.metrics_port, log_level="warning"
+                build_app(self),
+                host="0.0.0.0",
+                port=self.metrics_port,
+                log_level="warning",
+                # An open /api/stream never ends by itself, so don't wait for it on shutdown.
+                timeout_graceful_shutdown=2,
             )
             server_task = asyncio.create_task(uvicorn.Server(config).serve())
             logger.info(f"serving /metrics and /api on :{self.metrics_port}")
@@ -324,6 +338,9 @@ class Monitor:
             except nats.errors.TimeoutError:
                 continue
             except Exception as exc:
+                if self._nc.is_closed:
+                    # Shutting down. Retrying forever would keep asyncio.run from exiting.
+                    return
                 logger.warning(f"job {job_id!r}: done-event fetch failed: {exc!r}")
                 await asyncio.sleep(5)
                 continue
@@ -417,7 +434,7 @@ class Monitor:
         )
 
     def _emit(self, event: dict) -> None:
-        """Push an SSE delta to panel subscribers (drop on backpressure)."""
+        """Push an SSE delta to API subscribers (drop on backpressure)."""
         for queue in list(self.listeners):
             try:
                 queue.put_nowait(event)
@@ -720,6 +737,6 @@ def monitor_from_env() -> Monitor:
         prefix=s3io.s3_prefix(),
         notifications=notifications_from_env(),
         metrics_port=int(os.environ.get("DC_MONITOR_PORT", "8080")),
-        stall_cron=os.environ.get("DC_STALL_CRON"),
+        stall_cron=stall_cron_from_env(),
         priorities=alert_priorities_from_env(),
     )
