@@ -1,0 +1,54 @@
+services:
+  metricx:
+    build: .
+    image: metricx-qe
+    environment:
+#      METRICX_MODEL: google/metricx-23-qe-xl-v2p0
+      # reference-based (source+hypothesis+reference) alternative — variant and
+      # max input length (1536) are auto-detected from the model name:
+      METRICX_MODEL: google/metricx-24-hybrid-xl-v2p6-bfloat16
+      METRICX_TOKENIZER: google/mt5-xl
+      # METRICX_MAX_INPUT_LENGTH: "1024"  # defaults to the variant's trained length
+      METRICX_DTYPE: bfloat16          # float16 / bfloat16 to halve VRAM + latency
+      MAX_BATCH_SIZE: "64"
+      MAX_BATCH_WAIT_MS: "8"
+      CUDA_VISIBLE_DEVICES: "0"
+      METRICX_TOKEN: "${METRICX_TOKEN?set it in .env, blank leaves the service open}"
+    ports:
+      - "8023:8000"                   # POST /score, GET /health, /metrics
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              device_ids: ["1"]       # dedicated GPU; pick the free device
+#              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s              # first-start model download can be slow
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.metricx.rule=Host(`${METRICX_PUBLIC_HOST:?set it in .env, see .env.example}`)"
+      - "traefik.http.routers.metricx.entrypoints=web"
+      - "traefik.http.services.metricx.loadbalancer.server.port=8000"
+      # traefik only routes to backends on a network it is itself attached to.
+      # traefik lives on the languagetool compose's network, so join that one
+      # (referenced as the external `web` network below) instead of a private
+      # per-project network traefik can't reach.
+      - "traefik.docker.network=languagetool_web"
+    networks:
+      - web
+
+volumes:
+  hf-cache:
+
+networks:
+  web:
+    external: true
+    name: languagetool_web

@@ -1,0 +1,5 @@
+# @package _global_
+# Behaviour-only composition for the distributed controller: no endpoint or
+# secret ever reaches a rendered stage_spec. Workers inject bindings from
+# their environment at instantiate time (see bindings.example.yaml).
+_bindings: {}

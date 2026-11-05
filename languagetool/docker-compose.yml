@@ -1,0 +1,62 @@
+services:
+  traefik:
+    image: traefik:v3.6.2
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entryPoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - web
+    restart: unless-stopped
+
+  languagetool:
+    # fasttext is intentionally not configured: the client always sends an
+    # explicit language (pl-PL), so language auto-detection never runs. If you
+    # ever switch to language="auto", add a Dockerfile that installs fasttext +
+    # lid.176.bin and set langtool_fasttextBinary / langtool_fasttextModel.
+#    image: erikvl87/languagetool:6.7
+    build: .
+    environment:
+      # Size replicas * maxCheckThreads to the host core count (here ~48).
+      # One JVM shares the loaded language model across all its threads, so
+      # a few fat instances cost far less RAM than many thin ones.
+      - langtool_maxCheckThreads=12
+      - langtool_pipelineCaching=true
+      - langtool_pipelinePrewarming=true
+      - langtool_cacheSize=10000
+      # Pin Xms == Xmx to avoid heap-resize pauses. 3g is ample for Polish
+      # without n-grams; raise only if you hit OOM.
+      - Java_Xms=3g
+      - Java_Xmx=3g
+    restart: unless-stopped
+    deploy:
+      replicas: 4               # replicas * maxCheckThreads ~= host cores
+      resources:
+        limits:
+          memory: 4g
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.languagetool.rule=Host(`languagetool.loc`) || Host(`${LANGUAGETOOL_PUBLIC_HOST:?set it in .env, see .env.example}`)"
+      - "traefik.http.routers.languagetool.entrypoints=web"
+      - "traefik.http.services.languagetool.loadbalancer.server.port=8010"
+    networks:
+      - web
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8010/v2/languages" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    volumes:
+      - ./logback.xml:/LanguageTool/logback.xml
+
+networks:
+  web:
+    driver: bridge

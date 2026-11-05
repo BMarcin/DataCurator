@@ -1,0 +1,53 @@
+# Worker endpoint bindings — copy to bindings.yaml (gitignored) and point
+# DC_BINDINGS_FILE at it. Keyed by *model name* (what a stage_spec carries),
+# not by config alias. A worker's capabilities are derived from this file:
+# one `model:<name>` tag per entry, plus `cpu` and `ver:<git sha>`.
+#
+# Per model, a worker may also set its serving knobs — they describe this box's
+# server, not the output, so they are never part of a job's sig:
+#   concurrency: in-flight requests per stage on this worker; keep below the
+#                server's --max-num-seqs (unset = 8)
+#   timeout:     seconds per request, queueing included (unset = OpenAI's 600)
+models:
+  "Qwen/Qwen3.6-35B-A3B-FP8":
+    api_base: http://localhost:8000/v1
+    api_key: EMPTY
+  # Qwen3.8-27B-FP8 (scripts/run-qwen38.sh). That script passes no
+  # --served-model-name, so the key is the HF repo id itself.
+  "Qwen/Qwen3.8-27B-FP8":
+    api_base: http://localhost:8000/v1
+    api_key: EMPTY
+    concurrency: 20   # run-qwen38.sh serves --max-num-seqs 20
+    timeout: 600      # dense 27B: per-request latency is high
+  # Muse-Glimmer-30B. The key is the server's --served-model-name
+  # (scripts/run-muse-glimmer.sh), not the HF repo id -- that is what the
+  # stage_spec carries, what `model:` routing matches on, and what the request
+  # asks for.
+  "muse-glimmer":
+    api_base: http://localhost:8000/v1
+    api_key: EMPTY
+  # Index-Translate-9B-FP8 (scripts/run-index-translate.sh, --served-model-name
+  # index-translate). That script and run-muse-glimmer.sh both take every GPU
+  # and port 8000, so on one box only one of the two keys can be bound.
+  "index-translate":
+    api_base: http://localhost:8000/v1
+    api_key: EMPTY
+
+# Google Translate (the translate stage, and GoogleTranslateModifier): the full
+# URL of the translate endpoint and its `client` query value (both required by
+# those stages), and how hard THIS box
+# may hit the service — depends on its network/IP, so it is never part of a job's
+# sig. Unset knobs fall back to the stage defaults shown here.
+google_translate:
+  remote_server: https://translate.example.com/translate
+  client_name: example-client
+  concurrency: 8      # parallel requests per stage on this worker
+  timeout: 30.0       # seconds per request
+  retries: 5          # attempts per text (exponential backoff 2-30 s)
+
+languagetool:
+  remote_server: http://languagetool.loc
+
+metricx:
+  remote_server: http://localhost:8000
+  # api_token: <only when the service sets METRICX_TOKEN>

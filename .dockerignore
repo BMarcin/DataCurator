@@ -1,0 +1,18 @@
+# Keep the monitor image's build context lean (context = repo root).
+.venv
+.git
+data/
+dataset/
+finaldata/
+outputs/
+logs/
+wiki/
+grafana/
+job-panel/
+languagetool/
+litellm-proxy/
+**/__pycache__
+.env
+bindings.yaml
+distributed-infra/nats/nats-users.conf
+test.json

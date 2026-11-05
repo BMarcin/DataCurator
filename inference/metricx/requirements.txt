@@ -1,0 +1,22 @@
+# MetricX-QE inference service — pinned to the tested MetricX-23 stack.
+#
+# torch is installed separately in the Dockerfile against the CUDA index:
+#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+# (cu128 for Blackwell/sm_120 GPUs; older cards work too.)
+# For a CPU-only local run (e.g. golden-parity checks) use the cpu index.
+#
+# transformers must stay 4.30.2: metricx_model.MT5ForRegression subclasses
+# private mt5 internals that newer releases reshuffle.
+transformers==4.30.2
+sentencepiece==0.1.99
+# T5 fast-tokenizer conversion needs protobuf; >=4.21 rejects the protoc-3
+# generated code bundled with transformers 4.30.2, so stay on 3.20.x.
+protobuf==3.20.3
+numpy<2
+
+# HTTP surface (kept in step with the main repo's versions).
+starlette>=1.3.1
+uvicorn[standard]>=0.50
+loguru>=0.7
+prometheus-client>=0.20
+python-dotenv>=1.0

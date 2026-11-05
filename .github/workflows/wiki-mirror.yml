@@ -1,0 +1,23 @@
+name: Mirror wiki to GitHub Wiki tab
+
+on:
+  push:
+    branches: [main]
+    paths: [wiki/**]
+  workflow_dispatch:
+
+concurrency:
+  group: wiki-mirror
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Andrew-Chen-Wang/github-wiki-action@v4
+        with:
+          path: wiki/

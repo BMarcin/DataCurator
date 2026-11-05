@@ -1,0 +1,18 @@
+# LaBSE embedding service.
+#
+# torch is installed separately in the Dockerfile against the CUDA index:
+#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+# (cu128 for Blackwell/sm_120 GPUs; older cards work too.)
+# For a CPU-only local run (e.g. smoke checks) use the cpu index.
+#
+# sentence-transformers applies LaBSE's dense-pooler + L2 pipeline correctly; it
+# pulls in a compatible transformers. Unlike the MetricX service this needs no
+# pinned-old transformers — LaBSE is a stock BERT dual-encoder.
+sentence-transformers>=3.0
+
+# HTTP surface (kept in step with the main repo's versions).
+starlette>=1.3.1
+uvicorn[standard]>=0.50
+loguru>=0.7
+prometheus-client>=0.20
+python-dotenv>=1.0

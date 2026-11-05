@@ -1,0 +1,20 @@
+# Reusable standalone Google Translate stage. Compose into an experiment with
+# `- /stages/google_translate@pipeline.<id>`, list <id> in `order`, and set the
+# source/target fields and language pair (defaults suit the EN->PL flow).
+# Persists its own sharded output, so downstream stages reuse the translation
+# instead of re-hitting Google Translate on every rerun.
+enabled: true               # set false (here or in the experiment) to skip this stage
+
+stage:
+  _target_: DataCurator.pipeline.stages.google_translate.GoogleTranslateStage
+  source: text              # context field to translate
+  target: text_gtranslate   # field to write the translation to (added if new)
+  source_language_code: en
+  target_language_code: pl
+  # HTTP knobs (optional; shown with their defaults). Google's own semaphore
+  # bounds in-flight requests independently of runner.concurrency. Standalone
+  # only: on the fleet they are stripped from the spec and each worker sets
+  # them in its bindings file (`google_translate:`).
+  retries: 5
+  timeout: 30.0
+  concurrency: 8

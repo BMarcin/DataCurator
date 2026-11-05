@@ -1,0 +1,34 @@
+.env
+.env.*
+!.env.example
+!.env.*.example
+.claude/
+.idea
+dataset/
+outputs/
+__pycache__/
+bindings.yaml
+distributed-infra/nats/nats-users.conf
+logs/
+metricx/.venv/
+metricx/vendor/
+metricx/reports/
+metricx/*.jsonl
+metricx/*.summary.json
+metricx/*.csv
+metricx/summary.md
+metricx/gate-eval.md
+
+# Datasets and pipeline outputs (some records echo prompt text)
+data/*
+!data/example_input.jsonl
+finaldata/
+scripts/trivia-data/
+
+# Local scratch files
+test.py
+test.json
+tofix.txt
+
+# Experiment assets (prompt files) live outside git; see DataCurator/pipeline/prompts.py
+assets/
