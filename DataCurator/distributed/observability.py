@@ -28,7 +28,12 @@ LOKI_MAX_BATCH = 500
 
 
 def fleet_heartbeat_payload(worker) -> bytes:
-    """The ephemeral observability heartbeat — never load-bearing."""
+    """The ephemeral observability heartbeat — never load-bearing.
+
+    The host metrics block is left out when the bindings file sets
+    ``system_metrics: false`` (a box that only relays to a remote LLM
+    endpoint, whose own load would be meaningless on the dashboard).
+    """
     payload: Dict[str, Any] = {
         "worker_id": worker.worker_id,
         "capabilities": sorted(worker.capabilities),
@@ -36,9 +41,10 @@ def fleet_heartbeat_payload(worker) -> bytes:
         "version": worker.version,
         "ts": time.time(),
     }
-    metrics = sample_system_metrics(sample_gpu=True)
-    if metrics:
-        payload["metrics"] = metrics
+    if worker.bindings.get("system_metrics", True):
+        metrics = sample_system_metrics(sample_gpu=True)
+        if metrics:
+            payload["metrics"] = metrics
     return json.dumps(payload, separators=(",", ":")).encode()
 
 

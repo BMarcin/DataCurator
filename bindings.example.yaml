@@ -51,3 +51,9 @@ languagetool:
 metricx:
   remote_server: http://localhost:8000
   # api_token: <only when the service sets METRICX_TOKEN>
+
+# Send this box's CPU/RAM/GPU usage in the fleet heartbeat (unset = true). Set
+# false on a box that only relays to a remote LLM endpoint: its own load says
+# nothing about the work, so its Grafana CPU/RAM/GPU series stay absent. The
+# heartbeat itself (liveness, in-flight, version) is still sent.
+system_metrics: true

@@ -539,6 +539,12 @@ version}`) that the monitor consumes to show the fleet and fire **stall alerts**
 (queue depth with zero capable pullers). This is ephemeral pub/sub; nothing
 persists.
 
+The heartbeat also carries the box's CPU/RAM/GPU usage. A worker that only
+relays to a remote LLM endpoint can turn this off with `system_metrics: false`
+at the top level of its bindings file (see `bindings.example.yaml`). Its
+heartbeat still reports liveness, in-flight and version, but the monitor never
+creates CPU/RAM/GPU gauges for it.
+
 ### LLM endpoints: local or shared
 
 A tag like `model:X` means "I can serve stages needing model X" and is decoupled
