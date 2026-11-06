@@ -498,7 +498,9 @@ build bakes the release tag in as `DC_VERSION`. Set the same value in the
 controller's env file, otherwise it stamps jobs with the git SHA and no released
 worker matches them. Connection settings and bindings are provided at runtime. A
 `DC_VERSION` in the worker's env file overrides the built-in value, so a crash-fix
-release can run under the version it fixes.
+release can run under the version it fixes. `docker-compose/worker.yml` runs the
+`latest` image with host networking, the bindings file mounted read-only and a
+30-minute stop grace period for the drain.
 
 ### Monitor image
 
@@ -507,6 +509,7 @@ version from its record and never calls `resolve_version`. SIGTERM stops it
 straight away, and its state rebuilds from the done stream, the job records and S3
 on the next start. `DC_STALL_CRON` may be quoted, because `docker run --env-file`
 keeps the quotes that `uv run --env-file` needs around a value with spaces.
+`docker-compose/monitor.yml` runs the `latest` image with host networking.
 
 ## Capability routing
 

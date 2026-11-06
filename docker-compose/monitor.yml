@@ -1,0 +1,16 @@
+# Monitor (run_monitor.py) from the released image.
+# Run from the repo root: docker compose -f docker-compose/monitor.yml up -d
+# Needs ../.env.monitor (from .env.monitor.example). Paths are relative to this
+# file.
+name: dc-monitor
+
+services:
+  monitor:
+    image: ghcr.io/bmarcin/datacurator-monitor:latest
+    container_name: dc-monitor
+    restart: unless-stopped
+    # Serves /metrics (+ /api) on DC_MONITOR_PORT directly on the host, where
+    # distributed-infra's Prometheus scrapes host.docker.internal:8022.
+    network_mode: host
+    env_file:
+      - ../.env.monitor

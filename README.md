@@ -101,12 +101,11 @@ authentication, with one user per node:
 cp .env.monitor.example .env.monitor
 cp distributed-infra/nats/nats-users.example.conf distributed-infra/nats/nats-users.conf
 docker compose -f distributed-infra/docker-compose.yml --env-file .env.monitor up -d
-docker run -d --name dc-monitor --restart unless-stopped --network host \
-    --env-file .env.monitor \
-    ghcr.io/bmarcin/datacurator-monitor:1.0.0
+docker compose -f docker-compose/monitor.yml up -d
 ```
 
-Edit both copied files before starting. CI publishes the monitor image with each GitHub release. Its job handling does not
+Edit both copied files before starting. [`docker-compose/monitor.yml`](docker-compose/monitor.yml) runs the `latest`
+monitor image on the host network as `dc-monitor`. CI publishes the monitor image with each GitHub release. Its job handling does not
 depend on `DC_VERSION`, because each job carries its own version. Prometheus scrapes the monitor at
 `host.docker.internal:8022`, so set `DC_MONITOR_PORT=8022` and make sure the host firewall lets the Docker network reach
 that port. Set `GF_ADMIN_USER` and
@@ -124,16 +123,13 @@ without it the controller uses the git SHA and workers pull nothing. The model s
 ```bash
 cp .env.worker.example .env.worker
 cp bindings.example.yaml bindings.yaml
-docker run -d --name dc-worker --restart on-failure --network host --gpus all --stop-timeout 1800 \
-    --env-file .env.worker \
-    -v "$PWD/bindings.yaml:/app/bindings.yaml:ro" \
-    -v dc-worker-logs:/app/logs \
-    ghcr.io/bmarcin/datacurator-worker:1.0.0
+docker compose -f docker-compose/worker.yml up -d
 ```
 
-`--network host` lets `localhost` in `bindings.yaml` reach a model server on the same box, `--gpus all` is only needed for
-GPU metrics, and `--stop-timeout` gives in-flight chunks time to finish. Edit both copied files first. `docker run` reads
-`--env-file` values literally, so don't use inline comments or quotes there. A `DC_VERSION` in `.env.worker` overrides the
+[`docker-compose/worker.yml`](docker-compose/worker.yml) runs the `latest` worker image as `dc-worker`. Host networking
+lets `localhost` in `bindings.yaml` reach a model server on the same box, the GPU reservation is only needed for GPU
+metrics (drop the `deploy` block on a box without the NVIDIA container toolkit), and the 30-minute stop grace period gives
+in-flight chunks time to finish. Edit both copied files first, and don't use inline comments in `.env.worker`. A `DC_VERSION` in `.env.worker` overrides the
 image's version, which lets a crash-fix release keep working under the version it fixes. If the package is private, run `docker login ghcr.io` first.
 
 [`bindings.example.yaml`](bindings.example.yaml) also sets per-box `concurrency` and `timeout` for each model, the Google

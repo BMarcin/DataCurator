@@ -1,0 +1,32 @@
+# Distributed worker (run_distributed.py) from the released image.
+# Run from the repo root: docker compose -f docker-compose/worker.yml up -d
+# Needs ../.env.worker (from .env.worker.example) and ../bindings.yaml (from
+# bindings.example.yaml). Paths are relative to this file.
+name: dc-worker
+
+services:
+  worker:
+    image: ghcr.io/bmarcin/datacurator-worker:latest
+    container_name: dc-worker
+    restart: on-failure
+    # localhost in bindings.yaml reaches a model server on the same box.
+    network_mode: host
+    env_file:
+      - ../.env.worker
+    volumes:
+      - ../bindings.yaml:/app/bindings.yaml:ro
+      - logs:/app/logs
+    # SIGTERM drains the worker: in-flight chunks finish before it exits.
+    stop_grace_period: 30m
+    # GPU access is only used for the heartbeat's GPU metrics.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  logs:
+    name: dc-worker-logs
